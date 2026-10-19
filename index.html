@@ -52,6 +52,16 @@
   .shots li .s { text-align: right; color: var(--muted); font-size: 14px; }
   .shots li.late .t { color: var(--bad); }
 
+  .board { list-style: none; margin: 14px 0 0; padding: 0; width: 100%; max-width: 340px; display: grid; gap: 4px; font-variant-numeric: tabular-nums; }
+  .board:empty { display: none; }
+  .board li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 10px;
+    background: var(--panel2); border: 1px solid transparent; font-size: 15px; cursor: pointer; text-align: left; }
+  .board li.cur { border-color: var(--accent); }
+  .board li.done .time { color: var(--live); }
+  .board li .name small { display: block; color: var(--muted); font-size: 11px; }
+  .board li .time { font-weight: 700; font-size: 18px; }
+  .board li.total { background: transparent; border-top: 1px solid var(--line); border-radius: 0; cursor: default; color: var(--muted); }
+
   .meter-wrap { display: grid; gap: 6px; }
   .meter { position: relative; height: 10px; border-radius: 6px; background: var(--panel2); overflow: hidden; border: 1px solid var(--line); }
   .meter-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--blue); transition: width .05s linear; }
@@ -126,6 +136,7 @@
     <div class="big" id="big">0.00</div>
     <div class="sub" id="sub">Press Start, wait for the beep, shoot.</div>
     <ol class="shots" id="shots"></ol>
+    <ol class="board" id="board"></ol>
   </section>
 
   <section class="meter-wrap" aria-hidden="true">
@@ -143,7 +154,16 @@
   <div class="panel">
     <header><h2>Settings</h2><button class="close" data-close>Done</button></header>
 
-    <div class="group">Drill</div>
+    <div class="group">Mode</div>
+    <div class="row"><label for="s-mode">Mode<small>Single string: one string with the settings below. Drill course: run the drills on the board, one at a time, in your own time.</small></label>
+      <select id="s-mode" data-key="mode"><option value="single">Single string</option><option value="course">Drill course</option></select></div>
+
+    <div class="group">Drill course</div>
+    <div id="drillList"></div>
+    <div class="btnrow"><button class="btn danger" id="btnCourseReset">Clear course times</button></div>
+    <p class="note">A drill's time is its last shot. On the main screen, START runs the highlighted drill; tap any drill to run or redo it. Times stay on the board until you clear them; a finished course is also saved to History.</p>
+
+    <div class="group">Single string</div>
     <div class="row"><label for="s-shotCount">Shots to count<small>1 = pure reaction time</small></label>
       <select id="s-shotCount" data-key="shotCount">
         <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option>
@@ -203,7 +223,19 @@
 'use strict';
 
 /* ---------------- settings & storage ---------------- */
+// Rifle drills for course mode; a drill's time is its last shot, as on a match board. This is also the course order.
+const DRILLS = [
+  { id: 'high-ready', name: 'High ready', shots: 1, note: 'rifle at high ready, one shot on the beep' },
+  { id: 'low-ready', name: 'Low ready', shots: 1, note: 'rifle at low ready, one shot on the beep' },
+  { id: 'bill', name: 'Bill drill', shots: 6, note: 'six shots to the body, as fast as they stay on target' },
+  { id: '3b2h', name: '3 body 2 head', shots: 5, note: 'three to the body, two to the head' },
+  { id: 'reload', name: 'Combat reload (rifle)', shots: 2, note: 'one shot, combat reload, one shot — the time is the reload' },
+  { id: 'transition', name: 'Rifle to pistol transition', shots: 2, note: 'one shot rifle, transition, one shot pistol' },
+  { id: 'check', name: 'Check drill (1, 5 & 5)', shots: 11, note: 'one shot, then five, then five' },
+];
 const DEFAULTS = {
+  mode: 'single',                    // 'single' = one string with the settings below; 'course' = the drills on the board, one at a time
+  courseDrills: ['high-ready', 'low-ready', 'bill', '3b2h', 'reload', 'check'],
   shotCount: 1, leadIn: 2, delayMin: 1, delayMax: 4, par: 0, autoStop: 8,
   falseStart: false,                 // off: anything heard before the beep is ignored; on: it ends the run as a false start
   thrDb: -20, minSplit: 80, offsetMs: 0,
@@ -246,10 +278,30 @@ function normalizeSettings() {
   settings.beepClearMs = clamp(Math.round(settings.beepClearMs), 0, 2000);
   settings.repeat = clamp(Math.round(settings.repeat), 0, 120);
   settings.ratio = clamp(settings.ratio, 2, 20);
+  if (!['single', 'course'].includes(settings.mode)) settings.mode = 'single';
+  if (!Array.isArray(settings.courseDrills)) settings.courseDrills = DEFAULTS.courseDrills.slice();
+  settings.courseDrills = DRILLS.filter(d => settings.courseDrills.includes(d.id)).map(d => d.id);
 }
 normalizeSettings();
 const saveSettings = () => saveJSON(LS.settings, settings);
 const saveHistory = () => saveJSON(LS.history, hist);
+
+/* ---------------- drill course state ---------------- */
+// Which drill is up and the time each one got; kept in storage so an unfinished course survives a reload.
+const LS_COURSE = 'shotTimer.course.v1';
+let course = loadJSON(LS_COURSE, null);
+if (!course || typeof course !== 'object' || !course.results || typeof course.results !== 'object') course = { idx: 0, results: {}, completedAt: 0 };
+const saveCourse = () => saveJSON(LS_COURSE, course);
+const courseMode = () => settings.mode === 'course';
+const courseOrder = () => DRILLS.filter(d => settings.courseDrills.includes(d.id));
+const drillName = id => { const d = DRILLS.find(x => x.id === id); return d ? d.name : id; };
+function currentDrill() {
+  const o = courseOrder();
+  if (!o.length) return null;
+  course.idx = clamp(Math.round(course.idx || 0), 0, o.length - 1);
+  return o[course.idx];
+}
+const pbFor = id => { const t = hist.filter(h => h.drill === id && !h.course).map(h => h.shots[h.shots.length - 1]); return t.length ? Math.min(...t) : null; };
 
 /* ---------------- shot detection (runs in the audio thread) ----------------
    One source string so the AudioWorklet and the ScriptProcessor fallback share the exact same logic. */
@@ -535,12 +587,15 @@ async function startRun(opts) {
     el.big.textContent = '—';
     return;
   }
+  const drill = courseMode() ? currentDrill() : null; // in course mode the highlighted drill decides the shot count
+  if (courseMode() && !drill) { setStatus('No drills selected', 'Pick some under Settings → Drill course.', true); return; }
   requestWakeLock();
   const dur = settings.beepDur / 1000;
   const tArmed = audio.now() + 0.12 + settings.leadIn;          // get-ready time (only matters with false-start flagging on)
   const tBeep = tArmed + rand(settings.delayMin, settings.delayMax);
   const run = { ts: Date.now(), tArmed, tBeep, dur, dry, tHeard: 0, beepDelay: 0, beepMissed: false, floor: dur + 0.05,
-    par: settings.par > 0 ? settings.par : 0, shotCount: settings.shotCount, shots: [], falseStart: null, reason: '' };
+    par: settings.par > 0 ? settings.par : 0, shotCount: drill ? drill.shots : settings.shotCount, drill: drill ? drill.id : null,
+    shots: [], falseStart: null, reason: '' };
   const beepOpts = { freq: settings.beepFreq, dur, vol: settings.beepVol / 100, wave: settings.beepWave };
   run.beep = audio.beep(tBeep, beepOpts);
   if (run.par) run.parBeep = audio.beep(tBeep + run.par, { ...beepOpts, dur: 0.05 }); // short, same pitch: the notch covers it, the blind spot around par stays small
@@ -608,15 +663,36 @@ function finishRun(reason) {
   endRun(reason);
   const run = T.run;
   if (run.shots.length) {
-    hist.unshift({ ts: run.ts, shotCount: run.shotCount, par: run.par, shots: run.shots.map(s => Math.round(s.t * 1000) / 1000) });
+    const shots = run.shots.map(s => Math.round(s.t * 1000) / 1000);
+    hist.unshift({ ts: run.ts, shotCount: run.shotCount, par: run.par, shots, ...(run.drill ? { drill: run.drill } : {}) });
     hist = hist.slice(0, 1000);
     saveHistory();
-    if (settings.repeat > 0) { // hands-free reps: only after a string that actually recorded shots, so a silent setup can't loop beeps
+    if (run.drill) recordDrill(run.drill, shots); // the course never auto-repeats: the shooter starts each drill
+    else if (settings.repeat > 0) { // hands-free reps: only after a string that actually recorded shots, so a silent setup can't loop beeps
       T.repeatPending = true;
       T.repeatTimer = setTimeout(() => { T.repeatPending = false; if (T.state === 'done' && T.run === run) startRun(); }, settings.repeat * 1000);
       render();
     }
   }
+}
+
+// Puts a drill's time on the board and moves the highlight to the next drill without a time (wrapping to earlier
+// ones that were skipped). When every drill has a time, the whole course is filed in history once.
+function recordDrill(id, shots) {
+  course.results[id] = { time: shots[shots.length - 1], shots, ts: Date.now() };
+  const order = courseOrder();
+  let next = order.findIndex((d, i) => i > course.idx && !course.results[d.id]);
+  if (next < 0) next = order.findIndex(d => !course.results[d.id]);
+  if (next >= 0) course.idx = next;
+  else if (!course.completedAt) {
+    course.completedAt = Date.now();
+    const rows = order.map(d => ({ id: d.id, name: d.name, time: course.results[d.id].time }));
+    const total = Math.round(rows.reduce((a, r) => a + r.time, 0) * 1000) / 1000;
+    hist.unshift({ ts: course.completedAt, shotCount: 0, par: 0, shots: [total], course: rows });
+    saveHistory();
+  }
+  saveCourse();
+  render();
 }
 
 function endRun(reason) {
@@ -772,7 +848,7 @@ function setStatus(status, sub, bad) {
 }
 
 function render() {
-  const st = T.state, run = T.run, dry = run && run.dry ? ' · dry run' : '';
+  const st = T.state, run = T.run, dry = (run && run.drill ? ' · ' + drillName(run.drill) : '') + (run && run.dry ? ' · dry run' : '');
   el.app.dataset.state = st;
   el.btnMain.textContent = st === 'standby' || st === 'live' ? 'STOP' : st === 'calibrating' || st === 'beepcheck' ? 'CANCEL' : 'START';
   $('#btnCalib').textContent = st === 'calibrating' ? 'Cancel' : 'Calibrate';
@@ -781,8 +857,16 @@ function render() {
   el.big.classList.remove('bad');
   el.shots.innerHTML = '';
   if (st === 'idle') {
-    setStatus('Ready', T.notice || 'Press Start, wait for the beep, shoot.');
-    el.big.textContent = fmt(0);
+    if (courseMode()) {
+      const d = currentDrill(), o = courseOrder(), done = o.filter(x => course.results[x.id]).length;
+      if (!d) setStatus('Ready', 'No drills selected — pick some under Settings → Drill course.');
+      else setStatus(done === o.length ? 'Course complete' : 'Ready',
+        T.notice || `${course.results[d.id] ? 'Redo' : 'Next'}: ${d.name} · ${d.shots} shot${d.shots === 1 ? '' : 's'} · ${done}/${o.length} done · tap a drill to pick another`);
+      el.big.textContent = d && course.results[d.id] ? fmt(course.results[d.id].time) : fmt(0);
+    } else {
+      setStatus('Ready', T.notice || 'Press Start, wait for the beep, shoot.');
+      el.big.textContent = fmt(0);
+    }
   } else if (st === 'calibrating') {
     setStatus('Calibrating', `Heard ${calib.onsets.length} shot${calib.onsets.length === 1 ? '' : 's'} · fire 3–5 shots from where you normally stand`);
     el.big.textContent = String(CALIB_SECS);
@@ -815,13 +899,35 @@ function render() {
       if (run.par && total > run.par) parts.push(`over par by ${fmt(total - run.par)}`);
       if (run.beepMissed) parts.push('beep not heard by the mic, timed from the schedule');
       if (T.repeatPending) parts.push(`next string in ${settings.repeat} s (Esc stops)`);
+      if (run.drill) {
+        const o = courseOrder(), d = currentDrill();
+        parts.push(o.every(x => course.results[x.id]) ? 'course complete — tap a drill to redo it' : d ? `next: ${d.name} — press Start` : '');
+      }
       const short = run.reason === 'timeout' && run.shotCount > 0 && n < run.shotCount;
-      setStatus((short ? `Done · heard ${n} of ${run.shotCount}` : 'Done') + dry, parts.join(' · '));
+      setStatus((short ? `Done · heard ${n} of ${run.shotCount}` : 'Done') + dry, parts.filter(Boolean).join(' · '));
       el.big.textContent = fmt(n === 1 ? first : total);
       renderShots(run);
     }
   }
+  renderBoard();
 }
+
+function renderBoard() {
+  const board = $('#board');
+  if (!courseMode()) { board.innerHTML = ''; return; }
+  const o = courseOrder(), cur = currentDrill(), all = o.length && o.every(d => course.results[d.id]);
+  board.innerHTML = o.map((d, i) => {
+    const r = course.results[d.id], pb = pbFor(d.id);
+    return `<li data-idx="${i}" class="${cur && cur.id === d.id ? 'cur' : ''}${r ? ' done' : ''}">` +
+      `<span class="name">${d.name}<small>${d.shots} shot${d.shots === 1 ? '' : 's'}${pb != null ? ` · best ${fmt(pb)}` : ''}</small></span>` +
+      `<span class="time">${r ? fmt(r.time) : '—'}</span></li>`;
+  }).join('') + (o.length ? `<li class="total"><span class="name">Total</span><span class="time">${all ? fmt(o.reduce((a, d) => a + course.results[d.id].time, 0)) : '—'}</span></li>` : '');
+}
+$('#board').addEventListener('click', e => { // tap a drill to make it the one START runs (or redo it)
+  const li = e.target.closest('li[data-idx]');
+  if (!li || !idle()) return;
+  course.idx = +li.dataset.idx; T.notice = ''; saveCourse(); render();
+});
 
 function renderShots(run) {
   el.shots.innerHTML = run.shots.map((s, i) => {
@@ -863,6 +969,9 @@ function renderSettings() {
     const v = settings[input.dataset.key];
     if (input.type === 'checkbox') input.checked = !!v; else input.value = String(v);
   });
+  $('#drillList').innerHTML = DRILLS.map(d =>
+    `<div class="row"><label for="d-${d.id}">${d.name}<small>${d.shots} shot${d.shots === 1 ? '' : 's'} · ${d.note}</small></label>` +
+    `<input id="d-${d.id}" type="checkbox" data-drill="${d.id}"${settings.courseDrills.includes(d.id) ? ' checked' : ''}></div>`).join('');
   $('#thrLabel').textContent = `${settings.thrDb} dB`;
   $('#beepFloor').textContent = `Shots can't be timed until ~${floorMs()} ms after the beep is heard (beep length + 50 ms). Keep it short.`;
   $('#audioInfo').textContent = audio.info()
@@ -888,25 +997,36 @@ function onSettingInput(e) {
   saveSettings();
   if (e.type === 'change') renderSettings(); else { $('#thrLabel').textContent = `${settings.thrDb} dB`; renderMeterStatic(); }
   if (T.state !== 'calibrating' && T.state !== 'beepcheck') audio.setParams(detectorParams()); // those two own the detector until they finish
-  if (T.state === 'idle') render();
+  if (idle()) render();
 }
 $('#sheetSettings').addEventListener('input', onSettingInput);
 $('#sheetSettings').addEventListener('change', onSettingInput);
 $('#btnReset').addEventListener('click', () => { settings = { ...DEFAULTS }; saveSettings(); renderSettings(); audio.setNotch(settings.beepFreq); audio.setParams(detectorParams()); render(); });
+$('#drillList').addEventListener('change', e => {
+  const id = e.target.dataset.drill;
+  if (!id) return;
+  settings.courseDrills = DRILLS.filter(d => (d.id === id ? e.target.checked : settings.courseDrills.includes(d.id))).map(d => d.id);
+  saveSettings(); course.idx = 0; saveCourse();
+  if (idle()) render();
+});
+$('#btnCourseReset').addEventListener('click', () => {
+  if (!Object.keys(course.results).length || confirm('Clear all course times?')) { course = { idx: 0, results: {}, completedAt: 0 }; saveCourse(); if (idle()) render(); }
+});
 $('#btnCalib').addEventListener('click', () => (T.state === 'calibrating' ? endCalib(true) : startCalib()));
 $('#btnBeepCheck').addEventListener('click', () => (T.state === 'beepcheck' ? endBeepCheck('cancel') : startBeepCheck()));
 $('#btnSim').addEventListener('click', () => { if (idle()) { closeSheets(); startRun({ dry: true }); } else simulateShot(); });
 
 /* ---------------- history sheet ---------------- */
 function renderHistory() {
-  const firsts = hist.map(h => h.shots[0]).filter(Number.isFinite);
-  const splits = hist.flatMap(h => h.shots.slice(1).map((s, i) => s - h.shots[i])).filter(Number.isFinite);
+  const strings = hist.filter(h => !h.course); // course summaries are totals, not strings: keep them out of the stats
+  const firsts = strings.map(h => h.shots[0]).filter(Number.isFinite);
+  const splits = strings.flatMap(h => h.shots.slice(1).map((s, i) => s - h.shots[i])).filter(Number.isFinite);
   const last10 = firsts.slice(0, 10);
   const tiles = [
     [firsts.length ? fmt(Math.min(...firsts)) : '—', 'best 1st shot'],
     [last10.length ? fmt(last10.reduce((a, b) => a + b, 0) / last10.length) : '—', 'avg 1st shot (last 10)'],
     [splits.length ? fmt(Math.min(...splits)) : '—', 'best split'],
-    [String(hist.length), 'strings'],
+    [String(strings.length), 'strings'],
   ];
   $('#tiles').innerHTML = tiles.map(([v, k]) => `<div class="tile"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
   const list = $('#histList');
@@ -914,7 +1034,11 @@ function renderHistory() {
   list.innerHTML = hist.slice(0, 200).map(h => {
     const n = h.shots.length, d = new Date(h.ts);
     const when = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-    const mode = h.shotCount === 1 ? 'reaction' : `${n} shot${n === 1 ? '' : 's'}` + (h.shotCount ? '' : ' (free)') + (h.par ? ` · par ${fmt(h.par)}` : '');
+    if (Array.isArray(h.course)) {
+      return `<li><span class="when">${when} · drill course</span><span class="main">${fmt(h.shots[0])}</span><span class="splits">${h.course.map(r => `${r.name} ${fmt(r.time)}`).join(' · ')}</span></li>`;
+    }
+    const mode = h.drill ? drillName(h.drill) + (n > 1 ? ` · ${n} shots` : '')
+      : h.shotCount === 1 ? 'reaction' : `${n} shot${n === 1 ? '' : 's'}` + (h.shotCount ? '' : ' (free)') + (h.par ? ` · par ${fmt(h.par)}` : '');
     const splits = h.shots.slice(1).map((s, i) => '+' + fmt(s - h.shots[i])).join(' ');
     return `<li><span class="when">${when} · ${mode}</span><span class="main">${fmt(n === 1 ? h.shots[0] : h.shots[n - 1])}</span><span class="splits">${n > 1 ? `1st ${fmt(h.shots[0])} · ${splits}` : 'first shot'}</span></li>`;
   }).join('');
@@ -943,7 +1067,8 @@ $('#histFile').addEventListener('change', async e => {
     if (!Array.isArray(items)) throw new Error('not a list of strings');
     const valid = items.filter(h => h && Number.isFinite(h.ts) && Array.isArray(h.shots) && h.shots.length && h.shots.every(Number.isFinite));
     const seen = new Set(hist.map(h => h.ts));
-    const added = valid.filter(h => !seen.has(h.ts)).map(h => ({ ts: h.ts, shotCount: Number.isFinite(h.shotCount) ? h.shotCount : h.shots.length, par: Number.isFinite(h.par) ? h.par : 0, shots: h.shots }));
+    const added = valid.filter(h => !seen.has(h.ts)).map(h => ({ ts: h.ts, shotCount: Number.isFinite(h.shotCount) ? h.shotCount : h.shots.length, par: Number.isFinite(h.par) ? h.par : 0, shots: h.shots,
+      ...(typeof h.drill === 'string' ? { drill: h.drill } : {}), ...(Array.isArray(h.course) ? { course: h.course } : {}) }));
     hist = hist.concat(added).sort((a, b) => b.ts - a.ts).slice(0, 1000);
     saveHistory(); renderHistory();
     alert(`Imported ${added.length} string${added.length === 1 ? '' : 's'}${valid.length - added.length ? ` (${valid.length - added.length} already here)` : ''}.`);

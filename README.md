@@ -133,6 +133,18 @@ Settings → Testing → **Dry run** starts a run that needs no microphone; once
 is live, the same button fakes a shot. False starts, splits and history behave
 exactly as with real shots.
 
+## Drill course
+
+Settings → Mode → **Drill course** turns the main screen into a board of rifle
+drills: High ready (1 shot), Low ready (1), Bill drill (6), 3 body 2 head (5),
+Combat reload (shot–reload–shot, 2), Check drill (1, 5 & 5 = 11), plus an
+optional Rifle-to-pistol transition. A drill's time is its last shot, like a
+match board. START runs the highlighted drill; its time goes on the board and
+the next drill waits for you — nothing starts by itself. Tap any drill to run or
+redo it. Each drill shows your best ever time underneath; a finished course is
+saved to History with every time and the total. Settings → Drill course picks
+which drills are in, and clears the board.
+
 ## Drill settings worth knowing
 
 - **Get-ready time**: with false starts on, a fixed pause before the random
