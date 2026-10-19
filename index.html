@@ -1,0 +1,978 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Shot Timer">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<title>Shot Timer</title>
+<style>
+  :root {
+    --bg: #0b0d10; --panel: #14181d; --panel2: #1b2127; --line: #262e37;
+    --text: #e9eef3; --muted: #8b97a4;
+    --accent: #f5b840; --live: #3ddc84; --bad: #ff5c5c; --blue: #5aa9ff;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif; }
+  body { display: flex; justify-content: center; overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  #app { width: 100%; max-width: 520px; min-height: 100dvh; display: flex; flex-direction: column; gap: 14px;
+    padding: calc(12px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom)); transition: background .12s; }
+  #app.flash { background: #fff; }
+
+  .bar { display: flex; align-items: center; justify-content: space-between; }
+  .bar h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: .02em; color: var(--muted); text-transform: uppercase; }
+  .bar-actions { display: flex; gap: 8px; }
+  .icon { width: 40px; height: 40px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); font-size: 18px; display: grid; place-items: center; }
+
+  .display { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 22px 16px; min-height: 42dvh; }
+  .status { font-size: 15px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  #app[data-state="standby"] .status { color: var(--accent); }
+  #app[data-state="live"] .status { color: var(--live); }
+  #app[data-state="calibrating"] .status, #app[data-state="beepcheck"] .status { color: var(--blue); }
+  .status.bad { color: var(--bad) !important; }
+  .big { font-size: clamp(72px, 24vw, 124px); font-weight: 700; line-height: 1; letter-spacing: -.02em; margin: 14px 0 6px;
+    font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+  #app[data-state="live"] .big { color: var(--live); }
+  .big.bad { color: var(--bad); }
+  .sub { color: var(--muted); font-size: 15px; min-height: 20px; }
+  .shots { list-style: none; margin: 16px 0 0; padding: 0; width: 100%; max-width: 300px; display: grid; gap: 4px;
+    font-variant-numeric: tabular-nums; font-size: 17px; }
+  .shots li { display: grid; grid-template-columns: 36px 1fr 1fr; align-items: baseline; padding: 6px 10px; border-radius: 10px; background: var(--panel2); }
+  .shots li .n { color: var(--muted); font-size: 13px; text-align: left; }
+  .shots li .t { text-align: right; font-weight: 600; }
+  .shots li .s { text-align: right; color: var(--muted); font-size: 14px; }
+  .shots li.late .t { color: var(--bad); }
+
+  .meter-wrap { display: grid; gap: 6px; }
+  .meter { position: relative; height: 10px; border-radius: 6px; background: var(--panel2); overflow: hidden; border: 1px solid var(--line); }
+  .meter-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--blue); transition: width .05s linear; }
+  .meter-fill.hot { background: var(--accent); }
+  .meter-thr { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--bad); left: 60%; }
+  .meter-labels { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .main-btn { height: 88px; border: 0; border-radius: 22px; background: var(--accent); color: #141414; font-size: 26px; font-weight: 800;
+    letter-spacing: .06em; box-shadow: 0 8px 30px rgba(245, 184, 64, .18); }
+  .main-btn:active { transform: scale(.985); }
+  #app[data-state="standby"] .main-btn, #app[data-state="calibrating"] .main-btn, #app[data-state="beepcheck"] .main-btn { background: var(--panel2); color: var(--text); border: 2px solid var(--line); box-shadow: none; }
+  #app[data-state="live"] .main-btn { background: var(--bad); color: #fff; box-shadow: 0 8px 30px rgba(255, 92, 92, .2); }
+  .hint { text-align: center; color: var(--muted); font-size: 12px; }
+  @media (pointer: coarse) { .hint { display: none; } }
+
+  /* bottom sheets */
+  .sheet { position: fixed; inset: 0; display: none; z-index: 10; }
+  .sheet.open { display: block; }
+  .backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, .6); }
+  .panel { position: absolute; left: 0; right: 0; bottom: 0; margin: 0 auto; max-width: 520px; max-height: 88dvh; overflow: auto;
+    background: var(--panel); border: 1px solid var(--line); border-bottom: 0; border-radius: 22px 22px 0 0;
+    padding: 10px 18px calc(20px + env(safe-area-inset-bottom)); -webkit-user-select: text; user-select: text; }
+  .panel header { display: flex; align-items: center; justify-content: space-between; padding: 6px 0 10px; position: sticky; top: 0; background: var(--panel); }
+  .panel h2 { margin: 0; font-size: 18px; }
+  .close { border: 0; background: var(--panel2); border-radius: 10px; padding: 8px 12px; font-weight: 600; }
+  .group { margin: 14px 0 4px; font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+  .row label { flex: 1; font-size: 15px; }
+  .row small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .row input[type="number"], .row select { width: 96px; background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 10px; padding: 9px 10px; font-size: 16px; text-align: right; }
+  .row select { text-align: left; }
+  .row input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent); }
+  .row.stack { flex-direction: column; align-items: stretch; }
+  .row input[type="range"] { width: 100%; accent-color: var(--accent); margin: 8px 0 0; }
+  .btn { border: 1px solid var(--line); background: var(--panel2); border-radius: 12px; padding: 10px 14px; font-weight: 600; font-size: 14px; }
+  .btn.primary { background: var(--accent); color: #141414; border-color: transparent; }
+  .btn.danger { color: var(--bad); }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .note { color: var(--muted); font-size: 13px; line-height: 1.4; }
+  .note b { color: var(--text); }
+  input[type="file"] { display: none; }
+  label.btn { display: inline-block; }
+  .rec { margin: 8px 0 0; padding: 10px 12px; max-height: 220px; overflow: auto; background: var(--panel2); border-radius: 12px;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); white-space: pre; }
+  .rec:empty { display: none; }
+
+  .tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 8px 0 14px; }
+  .tile { background: var(--panel2); border-radius: 14px; padding: 12px; }
+  .tile .v { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tile .k { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .hist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .hist li { background: var(--panel2); border-radius: 12px; padding: 10px 12px; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; font-size: 14px; }
+  .hist .when { color: var(--muted); font-size: 12px; }
+  .hist .main { font-weight: 700; font-size: 18px; font-variant-numeric: tabular-nums; text-align: right; grid-row: span 2; align-self: center; }
+  .hist .splits { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
+  .empty { color: var(--muted); text-align: center; padding: 20px 0; }
+</style>
+</head>
+<body>
+<main id="app" data-state="idle">
+  <header class="bar">
+    <h1>Shot Timer</h1>
+    <div class="bar-actions">
+      <button class="icon" id="btnHistory" aria-label="History" title="History">☰</button>
+      <button class="icon" id="btnSettings" aria-label="Settings" title="Settings">⚙</button>
+    </div>
+  </header>
+
+  <section class="display" aria-live="polite">
+    <div class="status" id="status">Ready</div>
+    <div class="big" id="big">0.00</div>
+    <div class="sub" id="sub">Press Start, wait for the beep, shoot.</div>
+    <ol class="shots" id="shots"></ol>
+  </section>
+
+  <section class="meter-wrap" aria-hidden="true">
+    <div class="meter"><div class="meter-fill" id="meterFill"></div><div class="meter-thr" id="meterThr"></div></div>
+    <div class="meter-labels"><span id="meterDb">— dB</span><span id="meterInfo">mic off</span></div>
+  </section>
+
+  <button class="main-btn" id="btnMain">START</button>
+  <div class="hint">Space = start / stop &nbsp;·&nbsp; Esc = stop</div>
+</main>
+
+<!-- Settings -->
+<div class="sheet" id="sheetSettings" role="dialog" aria-label="Settings">
+  <div class="backdrop" data-close></div>
+  <div class="panel">
+    <header><h2>Settings</h2><button class="close" data-close>Done</button></header>
+
+    <div class="group">Drill</div>
+    <div class="row"><label for="s-shotCount">Shots to count<small>1 = pure reaction time</small></label>
+      <select id="s-shotCount" data-key="shotCount">
+        <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option>
+        <option value="5">5</option><option value="6">6</option><option value="8">8</option><option value="10">10</option>
+        <option value="0">Until stop</option>
+      </select></div>
+    <div class="row"><label for="s-leadIn">Get-ready time (s)<small>Fixed pause before the random delay. Sounds during it are ignored, not false starts.</small></label><input id="s-leadIn" data-key="leadIn" type="number" min="0" max="10" step="0.5"></div>
+    <div class="row"><label for="s-delayMin">Random delay, min (s)</label><input id="s-delayMin" data-key="delayMin" type="number" min="0.2" max="20" step="0.5"></div>
+    <div class="row"><label for="s-delayMax">Random delay, max (s)</label><input id="s-delayMax" data-key="delayMax" type="number" min="0.2" max="30" step="0.5"></div>
+    <div class="row"><label for="s-par">Par time (s)<small>0 = off. Second beep at par; later shots show red.</small></label><input id="s-par" data-key="par" type="number" min="0" max="60" step="0.1"></div>
+    <div class="row"><label for="s-autoStop">Auto-stop after silence (s)</label><input id="s-autoStop" data-key="autoStop" type="number" min="2" max="60" step="1"></div>
+    <div class="row"><label for="s-repeat">Auto-repeat after (s)<small>0 = off. Starts the next string by itself, so you can run reps without touching the device.</small></label><input id="s-repeat" data-key="repeat" type="number" min="0" max="120" step="1"></div>
+
+    <div class="group">Microphone</div>
+    <div class="row"><label>Calibrate<small id="calibMsg">Fire 3–5 shots from where you normally stand. No beep is played, so it can't influence the threshold.</small></label><button class="btn primary" id="btnCalib">Calibrate</button></div>
+    <div class="row"><label>Beep check<small id="beepMsg">Plays the beep and measures what the mic hears, so the beep can never be counted as a shot. Also measures the speaker→mic delay, which is subtracted from every time.</small></label><button class="btn" id="btnBeepCheck">Check</button></div>
+    <div class="row stack">
+      <label for="s-thrDb">Threshold (advanced) <b id="thrLabel"></b><small>Calibrate sets this. Shots must peak above it; lower = more sensitive. The meter shows what the detector hears (the beep's pitch is filtered out).</small></label>
+      <input id="s-thrDb" data-key="thrDb" type="range" min="-50" max="-3" step="1">
+    </div>
+    <div class="row"><label for="s-minSplit">Minimum split (ms)<small>Ignore sounds this soon after a shot (echo, double trigger). ~80 for semi-auto, ~50 for a burst.</small></label><input id="s-minSplit" data-key="minSplit" type="number" min="30" max="500" step="10"></div>
+    <div class="row"><label for="s-offsetMs">Timing offset (ms)<small>Added on top of the measured beep delay. Use only if a reference timer says you're consistently off.</small></label><input id="s-offsetMs" data-key="offsetMs" type="number" min="-200" max="200" step="1"></div>
+
+    <div class="group">Beep</div>
+    <div class="row"><label for="s-beepFreq">Pitch (Hz)</label><input id="s-beepFreq" data-key="beepFreq" type="number" min="500" max="5000" step="100"></div>
+    <div class="row"><label for="s-beepDur">Length (ms)<small id="beepFloor"></small></label><input id="s-beepDur" data-key="beepDur" type="number" min="30" max="600" step="10"></div>
+    <div class="row"><label for="s-beepVol">Volume (%)</label><input id="s-beepVol" data-key="beepVol" type="number" min="5" max="100" step="5"></div>
+    <div class="row"><label for="s-beepWave">Tone</label><select id="s-beepWave" data-key="beepWave"><option value="square">Harsh (square)</option><option value="sine">Soft (sine)</option></select></div>
+    <div class="row"><label for="s-flash">Flash screen on beep</label><input id="s-flash" data-key="flash" type="checkbox"></div>
+
+    <div class="group">Display</div>
+    <div class="row"><label for="s-decimals">Decimals</label><select id="s-decimals" data-key="decimals"><option value="2">0.00</option><option value="3">0.000</option></select></div>
+
+    <div class="group">Testing</div>
+    <div class="row"><label>Analyze a recording<small id="recMsg">Pick an audio or video file of your shots (a Voice Memo is fine). Runs the detector over it with your current settings and lists every impulse it finds.</small></label><label class="btn" for="recFile">Open</label><input id="recFile" type="file" accept="audio/*,video/*,.m4a,.wav,.mp3,.aac,.mov,.mp4"></div>
+    <pre class="rec" id="recOut"></pre>
+    <div class="btnrow"><button class="btn primary" id="btnRecApply" hidden>Use suggested threshold</button></div>
+    <div class="row"><label>Dry run / simulate<small>Starts a run that needs no microphone; once it's live, tap again to fake a shot.</small></label><button class="btn" id="btnSim">Dry run</button></div>
+    <p class="note" id="audioInfo">Audio not started yet.</p>
+    <div class="btnrow"><button class="btn danger" id="btnReset">Reset settings</button></div>
+  </div>
+</div>
+
+<!-- History -->
+<div class="sheet" id="sheetHistory" role="dialog" aria-label="History">
+  <div class="backdrop" data-close></div>
+  <div class="panel">
+    <header><h2>History</h2><button class="close" data-close>Done</button></header>
+    <div class="tiles" id="tiles"></div>
+    <ol class="hist" id="histList"></ol>
+    <div class="btnrow"><button class="btn" id="btnExport">Export JSON</button><label class="btn" for="histFile">Import JSON</label><input id="histFile" type="file" accept="application/json,.json"><button class="btn danger" id="btnClear">Clear history</button></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* ---------------- settings & storage ---------------- */
+const DEFAULTS = {
+  shotCount: 1, leadIn: 2, delayMin: 1, delayMax: 4, par: 0, autoStop: 8,
+  thrDb: -20, minSplit: 80, offsetMs: 0,
+  beepFreq: 2000, beepDur: 100, beepVol: 90, beepWave: 'square', flash: true, // short beep: shots can't be timed while it plays
+  decimals: 2, repeat: 0,
+  ratio: 5,                          // a shot must stand this many times above the background; Calibrate learns it
+  beepLatencyMs: 0, beepClearMs: 0, // measured by "Beep check" (0 = not measured)
+};
+const LS = { settings: 'shotTimer.settings.v2', history: 'shotTimer.history.v1' };
+const loadJSON = (k, fb) => { try { const v = JSON.parse(localStorage.getItem(k)); return v == null ? fb : v; } catch { return fb; } };
+const saveJSON = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const dbToLin = db => Math.pow(10, db / 20);
+const linToDb = x => 20 * Math.log10(Math.max(x, 1e-6));
+
+let settings = { ...DEFAULTS, ...loadJSON(LS.settings, {}) };
+let hist = loadJSON(LS.history, []);
+const validEntry = h => h && Number.isFinite(h.ts) && Array.isArray(h.shots) && h.shots.length > 0 && h.shots.every(Number.isFinite);
+hist = Array.isArray(hist) ? hist.filter(validEntry) : [];
+
+function normalizeSettings() {
+  for (const k of Object.keys(DEFAULTS)) {
+    if (typeof settings[k] !== typeof DEFAULTS[k] || (typeof DEFAULTS[k] === 'number' && !Number.isFinite(settings[k]))) settings[k] = DEFAULTS[k];
+  }
+  settings.shotCount = clamp(Math.round(settings.shotCount), 0, 50);
+  settings.leadIn = clamp(settings.leadIn, 0, 10);
+  settings.delayMin = clamp(settings.delayMin, 0.2, 30);
+  settings.delayMax = clamp(Math.max(settings.delayMax, settings.delayMin), 0.2, 30);
+  settings.par = clamp(settings.par, 0, 60);
+  settings.autoStop = clamp(settings.autoStop, 2, 60);
+  settings.thrDb = clamp(Math.round(settings.thrDb), -50, -3);
+  settings.minSplit = clamp(settings.minSplit, 30, 500);
+  settings.offsetMs = clamp(settings.offsetMs, -200, 200);
+  settings.beepFreq = clamp(settings.beepFreq, 500, 5000);
+  settings.beepDur = clamp(settings.beepDur, 30, 600);
+  settings.beepVol = clamp(settings.beepVol, 5, 100);
+  if (!['square', 'sine'].includes(settings.beepWave)) settings.beepWave = 'square';
+  settings.decimals = settings.decimals === 3 ? 3 : 2;
+  settings.beepLatencyMs = clamp(Math.round(settings.beepLatencyMs), 0, 500);
+  settings.beepClearMs = clamp(Math.round(settings.beepClearMs), 0, 2000);
+  settings.repeat = clamp(Math.round(settings.repeat), 0, 120);
+  settings.ratio = clamp(settings.ratio, 2, 20);
+}
+normalizeSettings();
+const saveSettings = () => saveJSON(LS.settings, settings);
+const saveHistory = () => saveJSON(LS.history, hist);
+
+/* ---------------- shot detection (runs in the audio thread) ----------------
+   One source string so the AudioWorklet and the ScriptProcessor fallback share the exact same logic. */
+const DETECTOR_SRC = `
+class ShotDetector {
+  constructor(sampleRate) {
+    this.sr = sampleRate;
+    this.thr = 0.1;          // linear peak threshold (0..1)
+    this.ratio = 3;          // peak must also exceed ratio x the background RMS envelope
+    this.refractory = 0.08;  // seconds ignored after an onset (= minimum split)
+    this.blanks = [];        // [[from, until], ...] context-time windows to ignore (our own beeps)
+    this.holdMax = 0.4;      // after a blank, keep ignoring while the beep still rings, at most this long
+    this.probe = null;       // [from, until]: record per-block peaks for the beep check
+    this.env = 0.002;        // slow background RMS envelope
+    this.last = -1e9;        // time of the last onset
+    this.holding = false; this.holdEnd = -1;
+    this.probeBuf = null; this.probeResult = null;
+    this.peak = 0; this.rms = 0;
+  }
+  blankEnd(t) { let end = -1; const b = this.blanks; for (let i = 0; i < b.length; i++) if (t >= b[i][0] && t < b[i][1] && b[i][1] > end) end = b[i][1]; return end; }
+  // block: Float32Array; t0: context time of block[0]. Returns {t, peak, env} on an onset, else null.
+  process(block, t0) {
+    let peak = 0, sum = 0, first = -1;
+    for (let i = 0; i < block.length; i++) {
+      const v = block[i], a = v < 0 ? -v : v;
+      sum += v * v;
+      if (a > peak) peak = a;
+      if (first < 0 && a >= this.thr) first = i;
+    }
+    const rms = Math.sqrt(sum / block.length);
+    this.peak = peak; this.rms = rms;
+    if (this.probe) {
+      if (t0 >= this.probe[1]) { this.probeResult = this.probeBuf || { t0, n: block.length, peaks: [] }; this.probe = null; this.probeBuf = null; }
+      else if (t0 >= this.probe[0]) { if (!this.probeBuf) this.probeBuf = { t0, n: block.length, peaks: [] }; this.probeBuf.peaks.push(peak); }
+    }
+    // 1) our own beep: hard-blanked while it plays (+ latency margin); the envelope is frozen so it can't learn the beep
+    const be = this.blankEnd(t0);
+    if (be >= 0) { this.holding = true; this.holdEnd = be; return null; }
+    // 2) then keep ignoring while the beep still rings in the room, until the first quiet block (bounded by holdMax)
+    if (this.holding) {
+      if (t0 < this.holdEnd + this.holdMax && peak >= this.thr * 0.5 && peak >= this.ratio * this.env) return null;
+      this.holding = false;
+    }
+    if ((t0 - this.last) < this.refractory) return null;
+    if (first >= 0 && peak >= this.ratio * this.env) {
+      const t = t0 + first / this.sr;
+      this.last = t;
+      return { t, peak, env: this.env };
+    }
+    // asymmetric envelope: rises slowly so impulses barely move it, falls faster
+    this.env += (rms - this.env) * (rms > this.env ? 0.02 : 0.05);
+    return null;
+  }
+}`;
+const WORKLET_SRC = DETECTOR_SRC + `
+class ShotProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.det = new ShotDetector(sampleRate);
+    this.n = 0; this.maxPeak = 0;
+    this.port.onmessage = (e) => { const p = e.data || {}; for (const k of ['thr', 'ratio', 'refractory', 'blanks', 'holdMax', 'probe']) if (k in p) this.det[k] = p[k]; };
+  }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) {
+      const det = this.det, onset = det.process(ch, currentTime);
+      if (det.peak > this.maxPeak) this.maxPeak = det.peak; // the meter shows the loudest block since the last update, so a 3 ms pop is not missed
+      if (onset) this.port.postMessage({ type: 'onset', t: onset.t, peak: onset.peak, env: onset.env });
+      if (det.probeResult) { this.port.postMessage({ type: 'probe', ...det.probeResult }); det.probeResult = null; }
+      if (++this.n % 12 === 0) { this.port.postMessage({ type: 'level', peak: this.maxPeak, env: det.env, t: currentTime }); this.maxPeak = 0; }
+    }
+    return true;
+  }
+}
+registerProcessor('shot-processor', ShotProcessor);`;
+const ShotDetector = new Function(DETECTOR_SRC + '\nreturn ShotDetector;')();
+
+/* ---------------- audio ---------------- */
+const audio = {
+  ctx: null, stream: null, node: null, det: null, ready: false, micOk: false, micError: '', usingWorklet: false,
+  onOnset: null, onLevel: null,
+
+  // Must be called from a user gesture the first time (autoplay policy / iOS).
+  async ensure() {
+    if (!this.ready) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) throw new Error('This browser has no Web Audio support.');
+      this.ctx = new AC({ latencyHint: 'interactive' });
+      this.ready = true;
+    }
+    if (this.ctx.state !== 'running') await this.ctx.resume();
+    if (!this.micOk) await this.acquireMic(); // first time, denied earlier, or the track died (iOS drops it on lock/background)
+  },
+
+  acquireMic() {
+    if (!this.acquiring) this.acquiring = this._acquireMic().finally(() => { this.acquiring = null; });
+    return this.acquiring;
+  },
+  async _acquireMic() {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('No microphone API (needs HTTPS or localhost).');
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 1 } }, video: false,
+      });
+      const track = this.stream.getAudioTracks()[0];
+      track.addEventListener('ended', () => this.loseMic('microphone stream ended'));
+      track.addEventListener('mute', () => this.loseMic('microphone muted by the system'));
+      await this.attachDetector();
+      this.micOk = true; this.micError = '';
+    } catch (e) {
+      this.micError = e && e.message ? e.message : String(e);
+      console.warn('Microphone unavailable:', this.micError);
+    }
+    this.setParams(detectorParams());
+    if (this.onMicChange) this.onMicChange();
+  },
+
+  // The track died (iOS does this on lock/background, macOS when another app takes the mic): drop it, re-ask on the next Start.
+  loseMic(why) {
+    if (!this.micOk) return;
+    this.micOk = false; this.micError = why + ' — press Start to re-arm';
+    try { this.node.disconnect(); } catch {}
+    try { this.stream.getTracks().forEach(t => t.stop()); } catch {}
+    if (this.onMicChange) this.onMicChange();
+  },
+
+  async attachDetector() {
+    const ctx = this.ctx, src = ctx.createMediaStreamSource(this.stream);
+    const handle = m => { if (m.type === 'onset') this.onOnset && this.onOnset(m); else if (m.type === 'level') this.onLevel && this.onLevel(m); else if (m.type === 'probe') this.onProbe && this.onProbe(m); };
+    if (!this.sink) { this.sink = ctx.createGain(); this.sink.gain.value = 0; this.sink.connect(ctx.destination); } // keeps the graph rendering; outputs nothing
+    const sink = this.sink, front = buildFrontEnd(ctx, settings.beepFreq);
+    src.connect(front.input);
+    this.notch = front.notch;
+    if (ctx.audioWorklet && this.worklet !== 'failed') {
+      try {
+        if (this.worklet !== 'loaded') { // a processor name can only be registered once per context
+          const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'application/javascript' }));
+          try { await ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+          this.worklet = 'loaded';
+        }
+        const node = new AudioWorkletNode(ctx, 'shot-processor', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+        node.port.onmessage = e => handle(e.data);
+        front.output.connect(node); node.connect(sink);
+        this.node = node; this.usingWorklet = true;
+        return;
+      } catch (e) { this.worklet = 'failed'; console.warn('AudioWorklet failed, using ScriptProcessor fallback:', e); }
+    }
+    this.det = new ShotDetector(ctx.sampleRate);
+    const sp = ctx.createScriptProcessor(256, 1, 1);
+    let n = 0, maxPeak = 0;
+    sp.onaudioprocess = e => { // playbackTime is the buffer's output time, a few ms off capture time; only used when AudioWorklet is missing
+      const det = this.det, onset = det.process(e.inputBuffer.getChannelData(0), e.playbackTime);
+      if (det.peak > maxPeak) maxPeak = det.peak;
+      if (onset) handle({ type: 'onset', ...onset });
+      if (det.probeResult) { handle({ type: 'probe', ...det.probeResult }); det.probeResult = null; }
+      if (++n % 6 === 0) { handle({ type: 'level', peak: maxPeak, env: det.env, t: e.playbackTime }); maxPeak = 0; }
+    };
+    front.output.connect(sp); sp.connect(sink);
+    this.node = sp; this.usingWorklet = false;
+  },
+
+  setParams(p) {
+    if (!this.micOk) return;
+    if (this.usingWorklet) this.node.port.postMessage(p); else Object.assign(this.det, p);
+  },
+  setNotch(freq) { if (this.notch) this.notch.frequency.value = freq; },
+
+  // Speaker-out → mic-in delay to assume before "Beep check" has measured the real one.
+  latencyGuessMs() {
+    const c = this.ctx, l = ((c && c.outputLatency) || 0) + ((c && c.baseLatency) || 0);
+    return Math.max(30, Math.round(l * 1000) + 15);
+  },
+
+  now() { return this.ctx ? this.ctx.currentTime : 0; },
+
+  // Schedules a tone at context time t. Returns a handle whose cancel() silences it (safe to call any time).
+  beep(t, { freq, dur, vol, wave }) {
+    const ctx = this.ctx, osc = ctx.createOscillator(), g = ctx.createGain();
+    osc.type = wave; osc.frequency.value = freq;
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.004);
+    g.gain.setValueAtTime(vol, t + Math.max(0.01, dur - 0.012));
+    g.gain.linearRampToValueAtTime(0, t + dur);
+    osc.connect(g); g.connect(ctx.destination);
+    osc.start(t); osc.stop(t + dur + 0.03);
+    let done = false;
+    osc.onended = () => { done = true; try { g.disconnect(); } catch {} };
+    return { cancel() { if (done) return; done = true; try { g.gain.cancelScheduledValues(0); g.gain.value = 0; g.disconnect(); } catch {} } };
+  },
+
+  info() {
+    if (!this.ready) return 'Audio not started yet.';
+    const c = this.ctx, ms = v => (typeof v === 'number' ? Math.round(v * 1000) + ' ms' : 'n/a');
+    const mic = this.micOk ? `mic on (${this.usingWorklet ? 'AudioWorklet' : 'ScriptProcessor fallback'})` : `mic unavailable: ${this.micError}`;
+    return `${mic} · ${Math.round(c.sampleRate)} Hz · output latency ${ms(c.outputLatency)} · base latency ${ms(c.baseLatency)}`;
+  },
+};
+function detectorParams() { return { thr: dbToLin(settings.thrDb), ratio: settings.ratio, refractory: settings.minSplit / 1000 }; }
+// Speaker→mic delay in seconds: measured by Beep check, else the browser's own figure.
+const beepLatency = () => (settings.beepLatencyMs > 0 ? settings.beepLatencyMs : audio.ready ? audio.latencyGuessMs() : 30) / 1000;
+// Nothing can be timed until the beep has played and reached the mic: this is the earliest measurable shot, after the beep.
+const floorMs = () => Math.round((beepLatency() + settings.beepDur / 1000 + 0.05) * 1000);
+
+// What the detector hears, live and offline: handling rumble removed, and our own beep tone notched out
+// (a shot is broadband, the beep is one pitch).
+function buildFrontEnd(ctx, beepFreq) {
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 120; hp.Q.value = 0.7;
+  const notch = ctx.createBiquadFilter(); notch.type = 'notch'; notch.frequency.value = beepFreq; notch.Q.value = 12;
+  hp.connect(notch);
+  return { input: hp, output: notch, notch };
+}
+
+/* ---------------- timer state machine ---------------- */
+// idle -> standby (beep scheduled) -> live (listening) -> done ; or calibrating
+const T = { state: 'idle', run: null, timers: [], autoStopTimer: 0, repeatTimer: 0, repeatPending: false, starting: false, notice: '' };
+const later = (ms, fn) => { T.timers.push(setTimeout(fn, Math.max(0, ms))); };
+const clearTimers = () => { T.timers.forEach(clearTimeout); T.timers.length = 0; clearTimeout(T.autoStopTimer); clearTimeout(T.repeatTimer); T.repeatPending = false; };
+const rand = (lo, hi) => lo + Math.random() * Math.max(0, hi - lo);
+const idle = () => T.state === 'idle' || T.state === 'done';
+
+// Brings audio up for a new activity. Resolves true when the caller may proceed; false if something else
+// started while the mic prompt was open, or audio is unavailable (the message is shown via `fail`).
+async function prepare(fail) {
+  if (T.starting || !idle()) return false;
+  clearTimers(); T.starting = true; T.notice = '';
+  try { await audio.ensure(); } catch (e) { fail(e.message); return false; } finally { T.starting = false; }
+  renderMeterStatic();
+  return idle();
+}
+
+async function startRun(opts) {
+  const dry = !!(opts && opts.dry); // dry run: no mic needed, shots come from the Simulate button
+  if (!(await prepare(m => setStatus('Audio error', m, true)))) return;
+  if (!audio.micOk && !dry) {
+    setStatus('No microphone', audio.micError + '. Allow the mic for this site, then press Start again.', true);
+    el.big.textContent = '—';
+    return;
+  }
+  requestWakeLock();
+  const dur = settings.beepDur / 1000, latency = beepLatency();
+  const tArmed = audio.now() + 0.12 + settings.leadIn;          // get-ready time: sounds before this are ignored, not false starts
+  const tBeep = tArmed + rand(settings.delayMin, settings.delayMax);
+  const run = { ts: Date.now(), tArmed, tBeep, dur, dry, latency, floor: latency + dur + 0.05,
+    par: settings.par > 0 ? settings.par : 0, shotCount: settings.shotCount, shots: [], falseStart: null, reason: '' };
+  const beepOpts = { freq: settings.beepFreq, dur, vol: settings.beepVol / 100, wave: settings.beepWave };
+  // Blank the detector while the beep plays, shifted by the measured speaker→mic delay; the detector's own
+  // hold-off then waits for the room to go quiet, so the beep can never be counted as a shot. The same delay sits
+  // inside every measured time (beep out late, shot in late), so it is subtracted from them again.
+  const blanks = [[tBeep - 0.01, tBeep + run.floor]];
+  run.beep = audio.beep(tBeep, beepOpts);
+  if (run.par) {
+    const tPar = tBeep + run.par, parDur = 0.05; // short, same pitch as the start beep: the notch covers it and the blind spot around par stays small
+    run.parBeep = audio.beep(tPar, { ...beepOpts, dur: parDur });
+    blanks.push([tPar - 0.01, tPar + latency + parDur + 0.05]);
+  }
+  audio.setParams({ blanks });
+  T.run = run; T.state = 'standby';
+  later((tArmed - audio.now()) * 1000, () => { if (T.state === 'standby' && T.run === run) render(); }); // "Get ready" → "Stand by"
+  later((tBeep - audio.now()) * 1000, () => {
+    if (T.state !== 'standby' || T.run !== run) return;
+    T.state = 'live';
+    if (settings.flash) flash();
+    armAutoStop();
+    render();
+  });
+  render();
+}
+
+function armAutoStop() {
+  clearTimeout(T.autoStopTimer);
+  T.autoStopTimer = setTimeout(() => { if (T.state === 'live') finishRun('timeout'); }, settings.autoStop * 1000);
+}
+
+function onOnset({ t, peak, env }) {
+  if (T.state === 'calibrating') { calib.onsets.push({ peak, env }); render(); return; }
+  if (T.state !== 'standby' && T.state !== 'live') return;
+  const run = T.run;
+  if (t < run.tArmed) return;                   // still getting ready
+  if (t < run.tBeep) { falseStart(t); return; }
+  run.shots.push({ t: t - run.tBeep - run.latency + settings.offsetMs / 1000, peak });
+  if (T.state === 'standby') T.state = 'live'; // the onset beat our own "go live" timer; the time is still right
+  if (run.shotCount > 0 && run.shots.length >= run.shotCount) finishRun('count');
+  else { armAutoStop(); render(); }
+}
+
+function falseStart(t) {
+  const run = T.run;
+  run.falseStart = t - run.tBeep;
+  endRun('false-start');
+}
+
+function finishRun(reason) {
+  if (T.state !== 'live' && T.state !== 'standby') return;
+  endRun(reason);
+  const run = T.run;
+  if (run.shots.length) {
+    hist.unshift({ ts: run.ts, shotCount: run.shotCount, par: run.par, shots: run.shots.map(s => Math.round(s.t * 1000) / 1000) });
+    hist = hist.slice(0, 1000);
+    saveHistory();
+    if (settings.repeat > 0) { // hands-free reps: only after a string that actually recorded shots, so a silent setup can't loop beeps
+      T.repeatPending = true;
+      T.repeatTimer = setTimeout(() => { T.repeatPending = false; if (T.state === 'done' && T.run === run) startRun(); }, settings.repeat * 1000);
+      render();
+    }
+  }
+}
+
+function endRun(reason) {
+  const run = T.run;
+  clearTimers();
+  if (run) {
+    run.beep && run.beep.cancel();
+    run.reason = reason;
+    // A string that made its count before par still gets the audible par beep (that is the drill's feedback);
+    // keep the detector blanked until it has played, then clear — unless a newer run owns the blanks by then.
+    const tParEnd = run.parBeep ? run.tBeep + run.par + 0.5 : 0;
+    if (run.parBeep && reason === 'count' && audio.now() < tParEnd) {
+      setTimeout(() => { if (T.run === run) audio.setParams({ blanks: [] }); }, (tParEnd - audio.now()) * 1000);
+    } else { run.parBeep && run.parBeep.cancel(); audio.setParams({ blanks: [] }); }
+  } else audio.setParams({ blanks: [] });
+  T.state = reason === 'cancel' ? 'idle' : 'done';
+  render();
+}
+
+function stopRun() {
+  if (T.state === 'standby') endRun('cancel');
+  else if (T.state === 'live') finishRun('stopped');
+  else if (T.state === 'calibrating') endCalib(true);
+  else if (T.state === 'beepcheck') endBeepCheck('cancel');
+  else if (T.state === 'done' && T.repeatPending) { clearTimers(); render(); }
+}
+
+function mainAction() {
+  if (T.state === 'idle' || T.state === 'done') startRun();
+  else stopRun();
+}
+
+function simulateShot() {
+  if (idle() || !audio.ready) return;
+  onOnset({ t: audio.now(), peak: dbToLin(settings.thrDb) * 2, env: 0.002 });
+}
+
+/* ---------------- calibration ---------------- */
+const CALIB_SECS = 8;
+const calib = { onsets: [], timer: 0, endAt: 0 };
+async function startCalib() {
+  if (!(await prepare(renderCalib))) return;
+  if (!audio.micOk) { renderCalib('Microphone unavailable: ' + audio.micError); renderSettings(); return; }
+  calib.onsets = []; calib.endAt = performance.now() + CALIB_SECS * 1000;
+  closeSheets(); // the main display shows the countdown and the shot count, readable from where you shoot
+  T.state = 'calibrating';
+  audio.setParams({ thr: dbToLin(-45), ratio: 4, blanks: [] });
+  renderCalib('Listening…');
+  calib.timer = setTimeout(() => endCalib(false), CALIB_SECS * 1000);
+  render();
+}
+function endCalib(cancelled) {
+  clearTimeout(calib.timer);
+  if (T.state !== 'calibrating') return;
+  T.state = 'idle';
+  let msg = 'Calibration cancelled.';
+  if (!cancelled) {
+    const top = calib.onsets.slice().sort((a, b) => b.peak - a.peak).slice(0, 3);
+    if (top.length >= 2) {
+      // threshold ~7 dB under the quietest of the loudest three shots, so every shot clears it with margin
+      const thr = clamp(top[top.length - 1].peak * 0.45, dbToLin(-50), dbToLin(-3));
+      settings.thrDb = clamp(Math.round(linToDb(thr)), -50, -3);
+      // how far those shots stood above the background they were fired over (motor whine included): keep half as the gate
+      const margin = Math.min(...top.map(o => o.peak / Math.max(o.env, 1e-6)));
+      settings.ratio = clamp(Math.round(margin / 2), 2, 20);
+      saveSettings();
+      msg = `Calibrated: heard ${calib.onsets.length} shots, about ${Math.round(margin)}× above the background. Threshold ${settings.thrDb} dB.`;
+    } else msg = `Heard ${calib.onsets.length} shot${calib.onsets.length === 1 ? '' : 's'} — need at least 2. Get closer to the mic and calibrate again.`;
+  }
+  T.notice = msg; renderCalib(msg);
+  audio.setParams(detectorParams());
+  renderSettings();
+  render();
+}
+
+/* ---------------- beep check: what does the detector hear of our own beep? ----------------
+   Plays the beep with detection blanked and records the per-block peak level around it, then reports the
+   measured speaker→mic delay, how loud the beep is versus the threshold, and when the mic is quiet again. */
+const beepCheck = { timer: 0, tBeep: 0, dur: 0, beep: null };
+async function startBeepCheck() {
+  if (!(await prepare(renderBeepMsg))) return;
+  if (!audio.micOk) { renderBeepMsg('Microphone unavailable: ' + audio.micError); renderSettings(); return; }
+  closeSheets();
+  T.state = 'beepcheck';
+  const dur = settings.beepDur / 1000, tBeep = audio.now() + 0.4;
+  beepCheck.tBeep = tBeep; beepCheck.dur = dur;
+  beepCheck.beep = audio.beep(tBeep, { freq: settings.beepFreq, dur, vol: settings.beepVol / 100, wave: settings.beepWave });
+  audio.setParams({ blanks: [[tBeep - 0.1, tBeep + 1.5]], probe: [tBeep - 0.1, tBeep + 1.2] });
+  renderBeepMsg('Playing the beep and listening…');
+  beepCheck.timer = setTimeout(() => endBeepCheck('timeout'), 3000);
+  render();
+}
+// Pure analysis of a probe recording (per-block peaks starting at t0, bd seconds per block):
+// when the beep arrives at the mic, how loud it is, and when the mic is quiet again.
+function analyzeProbe({ peaks, t0, bd }, tBeep, thr) {
+  const times = peaks.map((_, i) => t0 + i * bd);
+  const pre = peaks.filter((_, i) => times[i] < tBeep - 0.005).sort((a, b) => a - b);
+  const base = pre.length ? pre[pre.length >> 1] : 0.002;           // median background before the beep
+  const floor = Math.max(base * 4, dbToLin(-55));                    // "clearly above background"
+  let a = -1;
+  for (let i = 0; i < peaks.length; i++) if (times[i] >= tBeep - 0.005 && peaks[i] >= floor) { a = i; break; }
+  if (a < 0) return { heard: false, maxPeak: Math.max(1e-6, ...peaks) };
+  const hot = Math.max(thr * 0.5, floor);                            // same "still ringing" level the detector's hold-off uses
+  let last = a;
+  for (let i = a; i < peaks.length; i++) if (peaks[i] >= hot) last = i;
+  return { heard: true, latency: times[a] - tBeep, maxPeak: Math.max(...peaks.slice(a)), clear: times[last] + bd - tBeep };
+}
+function onProbe(m) {
+  if (T.state !== 'beepcheck' || !m.peaks) return;
+  clearTimeout(beepCheck.timer);
+  const thr = dbToLin(settings.thrDb), ms = v => Math.round(v * 1000);
+  const r = analyzeProbe({ peaks: m.peaks, t0: m.t0, bd: m.n / audio.ctx.sampleRate }, beepCheck.tBeep, thr);
+  let msg;
+  if (!r.heard) {
+    settings.beepLatencyMs = 0; settings.beepClearMs = 0;
+    msg = `The mic doesn't hear the beep at all (peak ${linToDb(r.maxPeak).toFixed(0)} dB vs threshold ${settings.thrDb} dB). It cannot count as a shot.`;
+  } else {
+    settings.beepLatencyMs = clamp(ms(r.latency), 0, 500);
+    settings.beepClearMs = clamp(ms(r.clear), 0, 2000);
+    const loud = r.maxPeak >= thr, clear = r.clear;
+    msg = `Beep reaches the mic at ${linToDb(r.maxPeak).toFixed(0)} dB (${loud ? 'ABOVE' : 'below'} your ${settings.thrDb} dB threshold), `
+      + `${settings.beepLatencyMs} ms after it is scheduled, and the mic is quiet again ${settings.beepClearMs} ms after the beep starts. `
+      + (loud ? `Detection is blanked for that window, so the beep cannot count as a shot; shots are timed from ${floorMs()} ms after the beep.`
+              : 'Even without blanking it could not count as a shot.')
+      + (clear > 0.3 ? ' That window is long — lower Volume or Length, or pick the soft tone, then check again.' : '');
+  }
+  saveSettings();
+  endBeepCheck('ok', msg);
+}
+function endBeepCheck(reason, msg) {
+  clearTimeout(beepCheck.timer);
+  if (T.state !== 'beepcheck') return;
+  if (beepCheck.beep) beepCheck.beep.cancel();
+  T.state = 'idle';
+  audio.setParams({ ...detectorParams(), blanks: [], probe: null });
+  T.notice = reason === 'ok' ? msg : reason === 'timeout' ? "Beep check didn't get a reading — try again." : 'Beep check cancelled.';
+  renderBeepMsg(T.notice);
+  renderSettings();
+  render();
+}
+function renderBeepMsg(msg) { $('#beepMsg').textContent = msg; }
+
+/* ---------------- rendering ---------------- */
+const $ = s => document.querySelector(s);
+const el = { app: $('#app'), status: $('#status'), big: $('#big'), sub: $('#sub'), shots: $('#shots'), btnMain: $('#btnMain'),
+  meterFill: $('#meterFill'), meterThr: $('#meterThr'), meterDb: $('#meterDb'), meterInfo: $('#meterInfo') };
+const fmt = s => (Number.isFinite(s) ? s.toFixed(settings.decimals) : '—');
+
+function setStatus(status, sub, bad) {
+  el.status.textContent = status; el.status.classList.toggle('bad', !!bad);
+  el.sub.textContent = sub || '';
+}
+
+function render() {
+  const st = T.state, run = T.run, dry = run && run.dry ? ' · dry run' : '';
+  el.app.dataset.state = st;
+  el.btnMain.textContent = st === 'standby' || st === 'live' ? 'STOP' : st === 'calibrating' || st === 'beepcheck' ? 'CANCEL' : 'START';
+  $('#btnCalib').textContent = st === 'calibrating' ? 'Cancel' : 'Calibrate';
+  $('#btnBeepCheck').textContent = st === 'beepcheck' ? 'Cancel' : 'Check';
+  $('#btnSim').textContent = idle() ? 'Dry run' : 'Simulate';
+  el.big.classList.remove('bad');
+  el.shots.innerHTML = '';
+  if (st === 'idle') {
+    setStatus('Ready', T.notice || 'Press Start, wait for the beep, shoot.');
+    el.big.textContent = fmt(0);
+  } else if (st === 'calibrating') {
+    setStatus('Calibrating', `Heard ${calib.onsets.length} shot${calib.onsets.length === 1 ? '' : 's'} · fire 3–5 shots from where you normally stand`);
+    el.big.textContent = String(CALIB_SECS);
+  } else if (st === 'beepcheck') {
+    setStatus('Beep check', 'Listening to the beep…');
+    el.big.textContent = '…';
+  } else if (st === 'standby') {
+    if (audio.now() < run.tArmed) setStatus('Get ready' + dry, `Arming in ${settings.leadIn} s`);
+    else setStatus('Stand by' + dry, 'Wait for the beep');
+    el.big.textContent = '—';
+  } else if (st === 'live') {
+    setStatus('Live' + dry, run.shots.length ? `${run.shots.length} shot${run.shots.length === 1 ? '' : 's'} · 1st ${fmt(run.shots[0].t)}` : `Listening (shots timed from ${Math.round(run.floor * 1000)} ms)`);
+    if (run.shots.length) el.big.textContent = fmt(run.shots[run.shots.length - 1].t);
+    renderShots(run);
+  } else if (st === 'done') {
+    if (run.falseStart != null) {
+      setStatus('False start', `Shot ${fmt(-run.falseStart)} s before the beep`, true);
+      el.big.textContent = fmt(run.falseStart); el.big.classList.add('bad');
+    } else if (!run.shots.length) {
+      setStatus('No shots heard', run.dry ? 'Dry run: tap Simulate in Settings while a run is live.' : audio.micOk ? 'Lower the threshold in Settings, or calibrate.' : 'Microphone unavailable — ' + audio.micError, true);
+      el.big.textContent = '—';
+    } else {
+      const n = run.shots.length, first = run.shots[0].t, total = run.shots[n - 1].t;
+      const splits = run.shots.slice(1).map((s, i) => s.t - run.shots[i].t);
+      const parts = [`${n} shot${n === 1 ? '' : 's'}`];
+      if (n > 1) parts.push(`1st ${fmt(first)}`, `total ${fmt(total)}`, `best split ${fmt(Math.min(...splits))}`);
+      else parts.push('reaction time');
+      if (run.par && total > run.par) parts.push(`over par by ${fmt(total - run.par)}`);
+      if (T.repeatPending) parts.push(`next string in ${settings.repeat} s (Esc stops)`);
+      const short = run.reason === 'timeout' && run.shotCount > 0 && n < run.shotCount;
+      setStatus((short ? `Done · heard ${n} of ${run.shotCount}` : 'Done') + dry, parts.join(' · '));
+      el.big.textContent = fmt(n === 1 ? first : total);
+      renderShots(run);
+    }
+  }
+}
+
+function renderShots(run) {
+  el.shots.innerHTML = run.shots.map((s, i) => {
+    const split = i ? s.t - run.shots[i - 1].t : null;
+    const late = run.par && s.t > run.par;
+    return `<li class="${late ? 'late' : ''}"><span class="n">#${i + 1}</span><span class="t">${fmt(s.t)}</span><span class="s">${split == null ? '' : '+' + fmt(split)}</span></li>`;
+  }).join('');
+}
+
+let liveRaf = 0;
+function liveTick() {
+  if (T.state === 'live' && T.run && !T.run.shots.length) el.big.textContent = fmt(Math.max(0, audio.now() - T.run.tBeep));
+  else if (T.state === 'calibrating') el.big.textContent = String(Math.max(0, Math.ceil((calib.endAt - performance.now()) / 1000)));
+  liveRaf = requestAnimationFrame(liveTick);
+}
+liveTick();
+
+let hotUntil = 0;
+function onLevel({ peak }) {
+  const db = linToDb(peak), pct = clamp((db + 60) / 60 * 100, 0, 100);
+  el.meterFill.style.width = pct + '%';
+  if (peak >= dbToLin(settings.thrDb)) hotUntil = performance.now() + 150;
+  el.meterFill.classList.toggle('hot', performance.now() < hotUntil);
+  el.meterDb.textContent = (db <= -60 ? '-60' : db.toFixed(0)) + ' dB';
+}
+function renderMeterStatic() {
+  el.meterThr.style.left = clamp((settings.thrDb + 60) / 60 * 100, 0, 100) + '%';
+  el.meterInfo.textContent = !audio.ready ? 'mic off — press Start' : audio.micOk ? `threshold ${settings.thrDb} dB` : 'mic unavailable';
+}
+
+function flash() {
+  el.app.classList.add('flash');
+  setTimeout(() => el.app.classList.remove('flash'), 110);
+}
+
+/* ---------------- settings sheet ---------------- */
+function renderSettings() {
+  document.querySelectorAll('[data-key]').forEach(input => {
+    const v = settings[input.dataset.key];
+    if (input.type === 'checkbox') input.checked = !!v; else input.value = String(v);
+  });
+  $('#thrLabel').textContent = `${settings.thrDb} dB`;
+  $('#beepFloor').textContent = `Shots can't be timed until ~${floorMs()} ms after the beep (beep + speaker→mic delay + 50 ms). Keep it short.`;
+  $('#audioInfo').textContent = audio.info() + (settings.beepClearMs > 0
+    ? ` · beep: ${settings.beepLatencyMs} ms delay (subtracted from every time), mic quiet after ${settings.beepClearMs} ms`
+    : ` · beep delay not measured yet, assuming ${audio.ready ? audio.latencyGuessMs() : '~30'} ms (run Beep check)`)
+    + ` · ratio gate ${settings.ratio}×`;
+  renderMeterStatic();
+}
+function renderCalib(msg) { $('#calibMsg').textContent = msg; }
+
+function onSettingInput(e) {
+  const input = e.target, k = input.dataset.key;
+  if (!k) return;
+  if (e.type === 'input' && input.type !== 'range') return; // number fields apply on change, so half-typed values never take effect
+  let v;
+  if (input.type === 'checkbox') v = input.checked;
+  else if (input.type === 'number' || input.type === 'range' || typeof DEFAULTS[k] === 'number') v = parseFloat(input.value);
+  else v = input.value;
+  if (typeof DEFAULTS[k] === 'number' && !Number.isFinite(v)) return; // mid-edit; keep the old value
+  settings[k] = v;
+  if (k.startsWith('beep')) { settings.beepClearMs = 0; audio.setNotch(settings.beepFreq); } // the beep changed: old measurement no longer applies
+  normalizeSettings();
+  saveSettings();
+  if (e.type === 'change') renderSettings(); else { $('#thrLabel').textContent = `${settings.thrDb} dB`; renderMeterStatic(); }
+  if (T.state !== 'calibrating' && T.state !== 'beepcheck') audio.setParams(detectorParams()); // those two own the detector until they finish
+  if (T.state === 'idle') render();
+}
+$('#sheetSettings').addEventListener('input', onSettingInput);
+$('#sheetSettings').addEventListener('change', onSettingInput);
+$('#btnReset').addEventListener('click', () => { settings = { ...DEFAULTS }; saveSettings(); renderSettings(); audio.setNotch(settings.beepFreq); audio.setParams(detectorParams()); render(); });
+$('#btnCalib').addEventListener('click', () => (T.state === 'calibrating' ? endCalib(true) : startCalib()));
+$('#btnBeepCheck').addEventListener('click', () => (T.state === 'beepcheck' ? endBeepCheck('cancel') : startBeepCheck()));
+$('#btnSim').addEventListener('click', () => { if (idle()) { closeSheets(); startRun({ dry: true }); } else simulateShot(); });
+
+/* ---------------- history sheet ---------------- */
+function renderHistory() {
+  const firsts = hist.map(h => h.shots[0]).filter(Number.isFinite);
+  const splits = hist.flatMap(h => h.shots.slice(1).map((s, i) => s - h.shots[i])).filter(Number.isFinite);
+  const last10 = firsts.slice(0, 10);
+  const tiles = [
+    [firsts.length ? fmt(Math.min(...firsts)) : '—', 'best 1st shot'],
+    [last10.length ? fmt(last10.reduce((a, b) => a + b, 0) / last10.length) : '—', 'avg 1st shot (last 10)'],
+    [splits.length ? fmt(Math.min(...splits)) : '—', 'best split'],
+    [String(hist.length), 'strings'],
+  ];
+  $('#tiles').innerHTML = tiles.map(([v, k]) => `<div class="tile"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
+  const list = $('#histList');
+  if (!hist.length) { list.innerHTML = '<li class="empty">No strings yet.</li>'; return; }
+  list.innerHTML = hist.slice(0, 200).map(h => {
+    const n = h.shots.length, d = new Date(h.ts);
+    const when = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    const mode = h.shotCount === 1 ? 'reaction' : `${n} shot${n === 1 ? '' : 's'}` + (h.shotCount ? '' : ' (free)') + (h.par ? ` · par ${fmt(h.par)}` : '');
+    const splits = h.shots.slice(1).map((s, i) => '+' + fmt(s - h.shots[i])).join(' ');
+    return `<li><span class="when">${when} · ${mode}</span><span class="main">${fmt(n === 1 ? h.shots[0] : h.shots[n - 1])}</span><span class="splits">${n > 1 ? `1st ${fmt(h.shots[0])} · ${splits}` : 'first shot'}</span></li>`;
+  }).join('');
+}
+$('#btnExport').addEventListener('click', async () => {
+  const json = JSON.stringify(hist, null, 1), name = 'shot-timer-history.json';
+  // An iOS home-screen app has no downloads; hand the file to the share sheet there instead.
+  const standalone = navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+  if (standalone && navigator.canShare) {
+    try {
+      const file = new File([json], name, { type: 'application/json' });
+      if (navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: 'Shot timer history' }); return; }
+    } catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' })); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+$('#btnClear').addEventListener('click', () => { if (hist.length && confirm(`Delete all ${hist.length} strings?`)) { hist = []; saveHistory(); renderHistory(); } });
+$('#histFile').addEventListener('change', async e => {
+  const f = e.target.files && e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  try {
+    const items = JSON.parse(await f.text());
+    if (!Array.isArray(items)) throw new Error('not a list of strings');
+    const valid = items.filter(h => h && Number.isFinite(h.ts) && Array.isArray(h.shots) && h.shots.length && h.shots.every(Number.isFinite));
+    const seen = new Set(hist.map(h => h.ts));
+    const added = valid.filter(h => !seen.has(h.ts)).map(h => ({ ts: h.ts, shotCount: Number.isFinite(h.shotCount) ? h.shotCount : h.shots.length, par: Number.isFinite(h.par) ? h.par : 0, shots: h.shots }));
+    hist = hist.concat(added).sort((a, b) => b.ts - a.ts).slice(0, 1000);
+    saveHistory(); renderHistory();
+    alert(`Imported ${added.length} string${added.length === 1 ? '' : 's'}${valid.length - added.length ? ` (${valid.length - added.length} already here)` : ''}.`);
+  } catch (err) { alert('Could not import: ' + err.message); }
+});
+
+/* ---------------- offline analysis: run the detector over a recording of real shots ----------------
+   Same filters, same ShotDetector, but with a very low threshold so every impulse is listed and you can see which
+   ones clear the real threshold. Decoding uses an OfflineAudioContext, so it never touches the microphone. */
+const rec = { suggest: null };
+async function analyzeRecording(file) {
+  const out = $('#recOut'); out.textContent = ''; rec.suggest = null; $('#btnRecApply').hidden = true;
+  renderRecMsg(`Decoding ${file.name}…`);
+  try {
+    const buf = await new OfflineAudioContext(1, 1, 48000).decodeAudioData(await file.arrayBuffer());
+    const sr = buf.sampleRate, off = new OfflineAudioContext(1, buf.length, sr);
+    const src = off.createBufferSource(); src.buffer = buf;
+    const front = buildFrontEnd(off, settings.beepFreq);
+    src.connect(front.input); front.output.connect(off.destination); src.start();
+    const pcm = (await off.startRendering()).getChannelData(0);
+    const det = new ShotDetector(sr); Object.assign(det, detectorParams(), { thr: dbToLin(-50) });
+    const N = 128, onsets = [], envs = [];
+    for (let i = 0; i + N <= pcm.length; i += N) {
+      const o = det.process(pcm.subarray(i, i + N), i / sr);
+      if (o) onsets.push(o);
+      if ((i / N) % 40 === 0) envs.push(det.env);
+    }
+    const thr = dbToLin(settings.thrDb), counted = onsets.filter(o => o.peak >= thr && o.peak >= settings.ratio * o.env);
+    envs.sort((a, b) => a - b);
+    const floorDb = linToDb(envs[envs.length >> 1] || 1e-6);
+    out.textContent = onsets.map((o, i) =>
+      `${o.t.toFixed(3).padStart(8)} s  ${linToDb(o.peak).toFixed(0).padStart(4)} dB  ${String(Math.round(o.peak / Math.max(o.env, 1e-6))).padStart(5)}× bg  ${counted.includes(o) ? 'COUNTS' : '  –   '}${i ? '  +' + (o.t - onsets[i - 1].t).toFixed(3) : ''}`
+    ).join('\n') || '(no impulse above -50 dB)';
+    let msg = `${onsets.length} impulse${onsets.length === 1 ? '' : 's'} in ${buf.duration.toFixed(1)} s; ${counted.length} would count with the current settings (${settings.thrDb} dB, ${settings.ratio}×). Background ≈ ${floorDb.toFixed(0)} dB RMS.`;
+    if (onsets.length) {
+      const top = onsets.map(o => o.peak).sort((a, b) => b - a);
+      rec.suggest = clamp(Math.round(linToDb(top[Math.min(top.length, 3) - 1] * 0.45)), -50, -3);
+      msg += ` Suggested threshold from the loudest shots: ${rec.suggest} dB.`;
+      $('#btnRecApply').hidden = false;
+    }
+    renderRecMsg(msg);
+  } catch (e) { renderRecMsg('Could not analyze: ' + (e && e.message ? e.message : e)); }
+}
+function renderRecMsg(m) { $('#recMsg').textContent = m; }
+$('#recFile').addEventListener('change', e => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) analyzeRecording(f); });
+$('#btnRecApply').addEventListener('click', () => {
+  if (rec.suggest == null) return;
+  settings.thrDb = rec.suggest; normalizeSettings(); saveSettings(); renderSettings(); audio.setParams(detectorParams());
+});
+
+/* ---------------- sheets, buttons, keys ---------------- */
+function openSheet(id) { closeSheets(); if (id === '#sheetSettings') renderSettings(); else renderHistory(); $(id).classList.add('open'); }
+function closeSheets() { document.querySelectorAll('.sheet.open').forEach(s => s.classList.remove('open')); }
+const sheetOpen = () => !!document.querySelector('.sheet.open');
+$('#btnSettings').addEventListener('click', () => openSheet('#sheetSettings'));
+$('#btnHistory').addEventListener('click', () => openSheet('#sheetHistory'));
+document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closeSheets));
+el.btnMain.addEventListener('click', mainAction);
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input, select, textarea, button') && e.code !== 'Escape') { if (e.code === 'Space' && e.target.matches('button')) return; }
+  if (e.target.matches('input, select, textarea')) return;
+  if (e.code === 'Space') { e.preventDefault(); if (!sheetOpen()) mainAction(); }
+  else if (e.code === 'Escape') { if (sheetOpen()) closeSheets(); else stopRun(); }
+});
+
+/* ---------------- wake lock & lifecycle ---------------- */
+let wakeLock = null;
+async function requestWakeLock() {
+  try {
+    if (!('wakeLock' in navigator) || wakeLock) return;
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') { if (audio.ready) requestWakeLock(); if (audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume().catch(() => {}); }
+  else if (T.state !== 'idle' && T.state !== 'done') stopRun(); // timings are meaningless once the tab is backgrounded
+});
+
+audio.onOnset = onOnset;
+audio.onLevel = onLevel;
+audio.onProbe = onProbe;
+audio.onMicChange = () => {
+  if (!audio.micOk && T.state !== 'idle' && T.state !== 'done') stopRun(); // the run can't hear anything any more
+  renderMeterStatic();
+  if (sheetOpen()) renderSettings();
+};
+renderSettings();
+render();
+
+// offline cache for the installed app (needs HTTPS or localhost; silently skipped elsewhere)
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+
+// test hook (used by automated checks; harmless otherwise)
+window.__shotTimer = { get state() { return T.state; }, get run() { return T.run; }, simulateShot, startRun, stopRun, get settings() { return settings; }, get history() { return hist; }, ShotDetector, analyzeProbe };
+</script>
+</body>
+</html>

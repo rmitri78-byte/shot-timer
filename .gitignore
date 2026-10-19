@@ -1,0 +1,4 @@
+certs/
+serve.log
+.DS_Store
+.claude-flow/
