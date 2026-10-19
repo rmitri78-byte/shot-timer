@@ -82,16 +82,18 @@ If shots are missed: lower the threshold. If it counts things that aren't shots
 
 ## How timing works
 
-- The beep is scheduled on the Web Audio clock; the detector runs in an
-  AudioWorklet on the same clock and timestamps the exact sample where the
-  sound first crossed the threshold. Beep and shot share one clock, so the
-  reaction time is not polluted by JavaScript timer jitter.
+- The beep is scheduled on the Web Audio clock, but the clock for your times
+  starts when the **microphone hears the beep** — the detector spots its own
+  beep arriving and timestamps it to the sample. That is the moment you hear
+  it too, so no speaker or microphone delay (iPhones add a large one once the
+  mic is open) can leak into a reaction time. Shots are timestamped the same
+  way, in the same AudioWorklet, so JavaScript timer jitter never enters.
 - The app cannot hear itself as a shot, three ways:
   1. the detector listens through a notch filter tuned to the beep's pitch
      (a shot is broadband, the beep is one tone), plus a high-pass that drops
      handling rumble;
-  2. detection is blanked while the beep plays, shifted by the measured
-     speaker→mic delay (Bluetooth speakers can add 100+ ms);
+  2. detection is blanked from the instant the beep is heard, for the beep's
+     length plus a margin — anchored to the real arrival, not the schedule;
   3. after the blank, the detector keeps ignoring until the mic is actually
      quiet again (room ringing), for at most 400 ms. The background envelope is
      frozen the whole time so the beep can't raise it.
@@ -101,12 +103,11 @@ If shots are missed: lower the threshold. If it counts things that aren't shots
 - Nothing heard before the beep counts (charging the blaster, motor spin-up,
   bumps). If you want match-style strictness, Settings → **Flag false starts**
   makes a shot before the beep end the run as a false start instead.
-- Speaker output latency and mic input latency **add up** inside every measured
-  time (the beep leaves the speaker late, and the shot reaches the detector
-  late). **Beep check** measures exactly that round trip and the app subtracts
-  it from every time; until you run it, the browser's reported latency is used
-  as a guess. **Timing offset** is only for a constant you've verified against a
-  reference timer.
+- If the mic never hears the beep (headphones, muted speaker, silent switch),
+  the run still goes live 0.8 s after the schedule and says so; those times
+  are approximate. **Beep check** tells you how loud the beep is at the mic.
+  **Timing offset** is only for a constant you've verified against a reference
+  timer.
 - If the mic track dies (iOS does this when the phone locks or the app goes to
   the background), the meter says so and the next **Start** re-asks for it.
 

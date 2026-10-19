@@ -263,6 +263,8 @@ class ShotDetector {
     this.blanks = [];        // [[from, until], ...] context-time windows to ignore (our own beeps)
     this.holdMax = 0.4;      // after a blank, keep ignoring while the beep still rings, at most this long
     this.probe = null;       // [from, until]: record per-block peaks for the beep check
+    this.expect = null;      // [from, until]: our beep is due; the first loud block in it is the beep's arrival at the mic
+    this.beepDur = 0.1;      // seconds the beep lasts, blanked from its arrival
     this.env = 0.002;        // slow background RMS envelope
     this.last = -1e9;        // time of the last onset
     this.holding = false; this.holdEnd = -1;
@@ -270,8 +272,10 @@ class ShotDetector {
     this.peak = 0; this.rms = 0;
   }
   blankEnd(t) { let end = -1; const b = this.blanks; for (let i = 0; i < b.length; i++) if (t >= b[i][0] && t < b[i][1] && b[i][1] > end) end = b[i][1]; return end; }
-  // block: Float32Array; t0: context time of block[0]. Returns {t, peak, env} on an onset, else null.
-  process(block, t0) {
+  // block: Float32Array of what the shot detector hears (rumble and beep tone filtered out); t0: context time of
+  // block[0]; raw: the unfiltered block, used to spot our own beep. Returns {t, peak, env} on a shot onset,
+  // {beep: t} when the beep is heard, else null.
+  process(block, t0, raw) {
     let peak = 0, sum = 0, first = -1;
     for (let i = 0; i < block.length; i++) {
       const v = block[i], a = v < 0 ? -v : v;
@@ -284,6 +288,22 @@ class ShotDetector {
     if (this.probe) {
       if (t0 >= this.probe[1]) { this.probeResult = this.probeBuf || { t0, n: block.length, peaks: [] }; this.probe = null; this.probeBuf = null; }
       else if (t0 >= this.probe[0]) { if (!this.probeBuf) this.probeBuf = { t0, n: block.length, peaks: [] }; this.probeBuf.peaks.push(peak); }
+    }
+    // 0) our beep is due: the first sample clearly above the background is its arrival. Blank from that instant
+    //    (no guessing at speaker/mic delays) and tell the main thread, which times every shot from this moment.
+    if (this.expect) {
+      if (t0 >= this.expect[1]) this.expect = null;
+      else if (t0 >= this.expect[0]) {
+        const src = raw || block, bthr = Math.max(0.015, 5 * this.env);
+        let at = -1;
+        for (let i = 0; i < src.length; i++) { const a = src[i] < 0 ? -src[i] : src[i]; if (a >= bthr) { at = i; break; } }
+        if (at >= 0) {
+          const t = t0 + at / this.sr;
+          this.expect = null;
+          this.blanks.push([t - 0.005, t + this.beepDur + 0.05]);
+          return { beep: t };
+        }
+      }
     }
     // 1) our own beep: hard-blanked while it plays (+ latency margin); the envelope is frozen so it can't learn the beep
     const be = this.blankEnd(t0);
@@ -310,14 +330,19 @@ class ShotProcessor extends AudioWorkletProcessor {
     super();
     this.det = new ShotDetector(sampleRate);
     this.n = 0; this.maxPeak = 0;
-    this.port.onmessage = (e) => { const p = e.data || {}; for (const k of ['thr', 'ratio', 'refractory', 'blanks', 'holdMax', 'probe']) if (k in p) this.det[k] = p[k]; };
+    this.port.onmessage = (e) => {
+      const p = e.data || {};
+      for (const k of ['thr', 'ratio', 'refractory', 'blanks', 'holdMax', 'probe', 'expect', 'beepDur']) if (k in p) this.det[k] = p[k];
+      if (p.addBlanks) this.det.blanks.push(...p.addBlanks);
+    };
   }
   process(inputs) {
-    const ch = inputs[0] && inputs[0][0];
+    const ch = inputs[0] && inputs[0][0], raw = (inputs[1] && inputs[1][0]) || ch;
     if (ch) {
-      const det = this.det, onset = det.process(ch, currentTime);
+      const det = this.det, r = det.process(ch, currentTime, raw);
       if (det.peak > this.maxPeak) this.maxPeak = det.peak; // the meter shows the loudest block since the last update, so a 3 ms pop is not missed
-      if (onset) this.port.postMessage({ type: 'onset', t: onset.t, peak: onset.peak, env: onset.env });
+      if (r && r.beep != null) this.port.postMessage({ type: 'beep', t: r.beep });
+      else if (r) this.port.postMessage({ type: 'onset', t: r.t, peak: r.peak, env: r.env });
       if (det.probeResult) { this.port.postMessage({ type: 'probe', ...det.probeResult }); det.probeResult = null; }
       if (++this.n % 12 === 0) { this.port.postMessage({ type: 'level', peak: this.maxPeak, env: det.env, t: currentTime }); this.maxPeak = 0; }
     }
@@ -378,7 +403,12 @@ const audio = {
 
   async attachDetector() {
     const ctx = this.ctx, src = ctx.createMediaStreamSource(this.stream);
-    const handle = m => { if (m.type === 'onset') this.onOnset && this.onOnset(m); else if (m.type === 'level') this.onLevel && this.onLevel(m); else if (m.type === 'probe') this.onProbe && this.onProbe(m); };
+    const handle = m => {
+      if (m.type === 'onset') this.onOnset && this.onOnset(m);
+      else if (m.type === 'beep') this.onBeep && this.onBeep(m);
+      else if (m.type === 'level') this.onLevel && this.onLevel(m);
+      else if (m.type === 'probe') this.onProbe && this.onProbe(m);
+    };
     if (!this.sink) { this.sink = ctx.createGain(); this.sink.gain.value = 0; this.sink.connect(ctx.destination); } // keeps the graph rendering; outputs nothing
     const sink = this.sink, front = buildFrontEnd(ctx, settings.beepFreq);
     src.connect(front.input);
@@ -390,9 +420,10 @@ const audio = {
           try { await ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
           this.worklet = 'loaded';
         }
-        const node = new AudioWorkletNode(ctx, 'shot-processor', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+        // input 0: filtered signal for shots; input 1: raw mic, so the detector can hear our own beep tone
+        const node = new AudioWorkletNode(ctx, 'shot-processor', { numberOfInputs: 2, numberOfOutputs: 1, outputChannelCount: [1] });
         node.port.onmessage = e => handle(e.data);
-        front.output.connect(node); node.connect(sink);
+        front.output.connect(node, 0, 0); src.connect(node, 0, 1); node.connect(sink);
         this.node = node; this.usingWorklet = true;
         return;
       } catch (e) { this.worklet = 'failed'; console.warn('AudioWorklet failed, using ScriptProcessor fallback:', e); }
@@ -401,9 +432,10 @@ const audio = {
     const sp = ctx.createScriptProcessor(256, 1, 1);
     let n = 0, maxPeak = 0;
     sp.onaudioprocess = e => { // playbackTime is the buffer's output time, a few ms off capture time; only used when AudioWorklet is missing
-      const det = this.det, onset = det.process(e.inputBuffer.getChannelData(0), e.playbackTime);
+      const det = this.det, r = det.process(e.inputBuffer.getChannelData(0), e.playbackTime);
       if (det.peak > maxPeak) maxPeak = det.peak;
-      if (onset) handle({ type: 'onset', ...onset });
+      if (r && r.beep != null) handle({ type: 'beep', t: r.beep });
+      else if (r) handle({ type: 'onset', ...r });
       if (det.probeResult) { handle({ type: 'probe', ...det.probeResult }); det.probeResult = null; }
       if (++n % 6 === 0) { handle({ type: 'level', peak: maxPeak, env: det.env, t: e.playbackTime }); maxPeak = 0; }
     };
@@ -413,7 +445,8 @@ const audio = {
 
   setParams(p) {
     if (!this.micOk) return;
-    if (this.usingWorklet) this.node.port.postMessage(p); else Object.assign(this.det, p);
+    if (this.usingWorklet) this.node.port.postMessage(p);
+    else { const { addBlanks, ...rest } = p; Object.assign(this.det, rest); if (addBlanks) this.det.blanks.push(...addBlanks); }
   },
   setNotch(freq) { if (this.notch) this.notch.frequency.value = freq; },
 
@@ -425,19 +458,33 @@ const audio = {
 
   now() { return this.ctx ? this.ctx.currentTime : 0; },
 
-  // Schedules a tone at context time t. Returns a handle whose cancel() silences it (safe to call any time).
+  // The beep is a pre-rendered buffer (tone with 4 ms fades) rather than an oscillator with scheduled gain ramps:
+  // a buffer plays its fixed length and ends by itself, so a misbehaving audio clock (iOS once the mic is open)
+  // cannot leave the tone stuck on, which is what happened with scheduled ramps.
+  beepBuffer(freq, dur, wave) {
+    const ctx = this.ctx, sr = ctx.sampleRate, key = `${sr}:${freq}:${dur}:${wave}`;
+    this._beeps = this._beeps || {};
+    if (this._beeps[key]) return this._beeps[key];
+    const n = Math.max(1, Math.round(sr * dur)), buf = ctx.createBuffer(1, n, sr), d = buf.getChannelData(0), fade = Math.max(1, Math.round(sr * 0.004));
+    for (let i = 0; i < n; i++) {
+      const s = Math.sin(2 * Math.PI * freq * i / sr);
+      const env = Math.min(1, i / fade, (n - 1 - i) / fade);
+      d[i] = (wave === 'sine' ? s : (s >= 0 ? 0.7 : -0.7)) * env;
+    }
+    return (this._beeps[key] = buf);
+  },
+  // Schedules the beep at context time t. Returns a handle whose cancel() silences it (safe to call any time).
   beep(t, { freq, dur, vol, wave }) {
-    const ctx = this.ctx, osc = ctx.createOscillator(), g = ctx.createGain();
-    osc.type = wave; osc.frequency.value = freq;
-    g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(vol, t + 0.004);
-    g.gain.setValueAtTime(vol, t + Math.max(0.01, dur - 0.012));
-    g.gain.linearRampToValueAtTime(0, t + dur);
-    osc.connect(g); g.connect(ctx.destination);
-    osc.start(t); osc.stop(t + dur + 0.03);
+    const ctx = this.ctx, src = ctx.createBufferSource(), g = ctx.createGain();
+    src.buffer = this.beepBuffer(freq, dur, wave); g.gain.value = vol;
+    src.connect(g); g.connect(ctx.destination);
+    src.start(t);
     let done = false;
-    osc.onended = () => { done = true; try { g.disconnect(); } catch {} };
-    return { cancel() { if (done) return; done = true; try { g.gain.cancelScheduledValues(0); g.gain.value = 0; g.disconnect(); } catch {} } };
+    const kill = () => { if (done) return; done = true; try { src.stop(); } catch {} try { src.disconnect(); g.disconnect(); } catch {} };
+    src.onended = () => { done = true; try { src.disconnect(); g.disconnect(); } catch {} };
+    // real-time safety net, independent of the audio clock: nothing of ours sounds longer than the beep + 400 ms
+    const guard = setTimeout(kill, Math.max(0, (t - ctx.currentTime) * 1000) + dur * 1000 + 400);
+    return { cancel() { clearTimeout(guard); kill(); } };
   },
 
   info() {
@@ -450,8 +497,8 @@ const audio = {
 function detectorParams() { return { thr: dbToLin(settings.thrDb), ratio: settings.ratio, refractory: settings.minSplit / 1000 }; }
 // Speaker→mic delay in seconds: measured by Beep check, else the browser's own figure.
 const beepLatency = () => (settings.beepLatencyMs > 0 ? settings.beepLatencyMs : audio.ready ? audio.latencyGuessMs() : 30) / 1000;
-// Nothing can be timed until the beep has played and reached the mic: this is the earliest measurable shot, after the beep.
-const floorMs = () => Math.round((beepLatency() + settings.beepDur / 1000 + 0.05) * 1000);
+// Nothing can be timed while the beep plays: the earliest measurable shot, counted from the beep as heard.
+const floorMs = () => Math.round(settings.beepDur + 50);
 
 // What the detector hears, live and offline: handling rumble removed, and our own beep tone notched out
 // (a shot is broadband, the beep is one pitch).
@@ -489,33 +536,47 @@ async function startRun(opts) {
     return;
   }
   requestWakeLock();
-  const dur = settings.beepDur / 1000, latency = beepLatency();
-  const tArmed = audio.now() + 0.12 + settings.leadIn;          // get-ready time: sounds before this are ignored, not false starts
+  const dur = settings.beepDur / 1000;
+  const tArmed = audio.now() + 0.12 + settings.leadIn;          // get-ready time (only matters with false-start flagging on)
   const tBeep = tArmed + rand(settings.delayMin, settings.delayMax);
-  const run = { ts: Date.now(), tArmed, tBeep, dur, dry, latency, floor: latency + dur + 0.05,
+  const run = { ts: Date.now(), tArmed, tBeep, dur, dry, tHeard: 0, beepDelay: 0, beepMissed: false, floor: dur + 0.05,
     par: settings.par > 0 ? settings.par : 0, shotCount: settings.shotCount, shots: [], falseStart: null, reason: '' };
   const beepOpts = { freq: settings.beepFreq, dur, vol: settings.beepVol / 100, wave: settings.beepWave };
-  // Blank the detector while the beep plays, shifted by the measured speaker→mic delay; the detector's own
-  // hold-off then waits for the room to go quiet, so the beep can never be counted as a shot. The same delay sits
-  // inside every measured time (beep out late, shot in late), so it is subtracted from them again.
-  const blanks = [[tBeep - 0.01, tBeep + run.floor]];
   run.beep = audio.beep(tBeep, beepOpts);
-  if (run.par) {
-    const tPar = tBeep + run.par, parDur = 0.05; // short, same pitch as the start beep: the notch covers it and the blind spot around par stays small
-    run.parBeep = audio.beep(tPar, { ...beepOpts, dur: parDur });
-    blanks.push([tPar - 0.01, tPar + latency + parDur + 0.05]);
-  }
-  audio.setParams({ blanks });
+  if (run.par) run.parBeep = audio.beep(tBeep + run.par, { ...beepOpts, dur: 0.05 }); // short, same pitch: the notch covers it, the blind spot around par stays small
+  // The detector listens for our own beep arriving at the mic and blanks from that instant — no guessing at
+  // speaker/mic delays (iPhones add a large, unreported one once the mic is open). Every shot is then timed from
+  // the beep as heard, which is exactly when the shooter hears it.
+  audio.setParams({ blanks: [], expect: [tBeep - 0.02, tBeep + 0.8], beepDur: dur });
   T.run = run; T.state = 'standby';
   later((tArmed - audio.now()) * 1000, () => { if (T.state === 'standby' && T.run === run) render(); }); // "Get ready" → "Stand by"
-  later((tBeep - audio.now()) * 1000, () => {
-    if (T.state !== 'standby' || T.run !== run) return;
-    T.state = 'live';
-    if (settings.flash) flash();
-    armAutoStop();
-    render();
+  // Without a mic (dry run, or none) go live on the schedule; otherwise wait for the beep to be heard, with a
+  // fallback in case the mic never hears it (headphones, muted speaker).
+  const listening = audio.micOk && !dry, fallbackAt = listening ? tBeep + 0.8 : tBeep;
+  later((fallbackAt - audio.now()) * 1000, () => {
+    if (T.state === 'standby' && T.run === run) goLive(run, tBeep + (listening ? beepLatency() : 0), false, listening);
   });
   render();
+}
+
+// The beep has sounded — heard by the mic at tHeard, or assumed from the schedule — so timing starts now.
+function goLive(run, tHeard, heard, missed) {
+  run.tHeard = tHeard; run.beepDelay = tHeard - run.tBeep; run.beepMissed = !!missed;
+  if (heard) { settings.beepLatencyMs = clamp(Math.round(run.beepDelay * 1000), 0, 500); saveSettings(); }
+  if (run.par) { // the par beep reaches the mic with the same delay the start beep had
+    const tPar = run.tBeep + run.par + (heard ? run.beepDelay : 0);
+    audio.setParams({ addBlanks: [[tPar - 0.01, tPar + 0.05 + 0.05]] });
+  }
+  T.state = 'live';
+  if (settings.flash) flash();
+  armAutoStop();
+  render();
+}
+
+function onBeep({ t }) {
+  const run = T.run;
+  if (T.state !== 'standby' || !run || t < run.tBeep - 0.05) return;
+  goLive(run, t, true, false);
 }
 
 function armAutoStop() {
@@ -527,12 +588,11 @@ function onOnset({ t, peak, env }) {
   if (T.state === 'calibrating') { calib.onsets.push({ peak, env }); render(); return; }
   if (T.state !== 'standby' && T.state !== 'live') return;
   const run = T.run;
-  if (t < run.tBeep) {                          // before the beep: nothing counts unless false-start flagging is on
-    if (settings.falseStart && t >= run.tArmed) falseStart(t);
+  if (T.state === 'standby' || t < run.tHeard) { // before the beep was heard: nothing counts unless false-start flagging is on
+    if (settings.falseStart && t >= run.tArmed && t < run.tBeep) falseStart(t);
     return;
   }
-  run.shots.push({ t: t - run.tBeep - run.latency + settings.offsetMs / 1000, peak });
-  if (T.state === 'standby') T.state = 'live'; // the onset beat our own "go live" timer; the time is still right
+  run.shots.push({ t: t - run.tHeard + settings.offsetMs / 1000, peak });
   if (run.shotCount > 0 && run.shots.length >= run.shotCount) finishRun('count');
   else { armAutoStop(); render(); }
 }
@@ -562,6 +622,7 @@ function finishRun(reason) {
 function endRun(reason) {
   const run = T.run;
   clearTimers();
+  audio.setParams({ expect: null });
   if (run) {
     run.beep && run.beep.cancel();
     run.reason = reason;
@@ -741,7 +802,9 @@ function render() {
       setStatus('False start', `Shot ${fmt(-run.falseStart)} s before the beep`, true);
       el.big.textContent = fmt(run.falseStart); el.big.classList.add('bad');
     } else if (!run.shots.length) {
-      setStatus('No shots heard', run.dry ? 'Dry run: tap Simulate in Settings while a run is live.' : audio.micOk ? 'Lower the threshold in Settings, or calibrate.' : 'Microphone unavailable — ' + audio.micError, true);
+      setStatus('No shots heard', run.dry ? 'Dry run: tap Simulate in Settings while a run is live.'
+        : run.beepMissed ? 'The mic did not hear the beep either — check the volume / silent switch, or calibrate.'
+        : audio.micOk ? 'Lower the threshold in Settings, or calibrate.' : 'Microphone unavailable — ' + audio.micError, true);
       el.big.textContent = '—';
     } else {
       const n = run.shots.length, first = run.shots[0].t, total = run.shots[n - 1].t;
@@ -750,6 +813,7 @@ function render() {
       if (n > 1) parts.push(`1st ${fmt(first)}`, `total ${fmt(total)}`, `best split ${fmt(Math.min(...splits))}`);
       else parts.push('reaction time');
       if (run.par && total > run.par) parts.push(`over par by ${fmt(total - run.par)}`);
+      if (run.beepMissed) parts.push('beep not heard by the mic, timed from the schedule');
       if (T.repeatPending) parts.push(`next string in ${settings.repeat} s (Esc stops)`);
       const short = run.reason === 'timeout' && run.shotCount > 0 && n < run.shotCount;
       setStatus((short ? `Done · heard ${n} of ${run.shotCount}` : 'Done') + dry, parts.join(' · '));
@@ -769,7 +833,7 @@ function renderShots(run) {
 
 let liveRaf = 0;
 function liveTick() {
-  if (T.state === 'live' && T.run && !T.run.shots.length) el.big.textContent = fmt(Math.max(0, audio.now() - T.run.tBeep));
+  if (T.state === 'live' && T.run && !T.run.shots.length) el.big.textContent = fmt(Math.max(0, audio.now() - T.run.tHeard));
   else if (T.state === 'calibrating') el.big.textContent = String(Math.max(0, Math.ceil((calib.endAt - performance.now()) / 1000)));
   liveRaf = requestAnimationFrame(liveTick);
 }
@@ -800,10 +864,10 @@ function renderSettings() {
     if (input.type === 'checkbox') input.checked = !!v; else input.value = String(v);
   });
   $('#thrLabel').textContent = `${settings.thrDb} dB`;
-  $('#beepFloor').textContent = `Shots can't be timed until ~${floorMs()} ms after the beep (beep + speaker→mic delay + 50 ms). Keep it short.`;
-  $('#audioInfo').textContent = audio.info() + (settings.beepClearMs > 0
-    ? ` · beep: ${settings.beepLatencyMs} ms delay (subtracted from every time), mic quiet after ${settings.beepClearMs} ms`
-    : ` · beep delay not measured yet, assuming ${audio.ready ? audio.latencyGuessMs() : '~30'} ms (run Beep check)`)
+  $('#beepFloor').textContent = `Shots can't be timed until ~${floorMs()} ms after the beep is heard (beep length + 50 ms). Keep it short.`;
+  $('#audioInfo').textContent = audio.info()
+    + (settings.beepLatencyMs > 0 ? ` · beep reaches the mic ${settings.beepLatencyMs} ms after it is scheduled (measured on every run)` : ' · beep delay not measured yet')
+    + (settings.beepClearMs > 0 ? `, mic quiet ${settings.beepClearMs} ms after it starts` : '')
     + ` · ratio gate ${settings.ratio}×`;
   renderMeterStatic();
 }
@@ -960,6 +1024,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 audio.onOnset = onOnset;
+audio.onBeep = onBeep;
 audio.onLevel = onLevel;
 audio.onProbe = onProbe;
 audio.onMicChange = () => {
@@ -976,7 +1041,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
 }
 
 // test hook (used by automated checks; harmless otherwise)
-window.__shotTimer = { get state() { return T.state; }, get run() { return T.run; }, simulateShot, startRun, stopRun, get settings() { return settings; }, get history() { return hist; }, ShotDetector, analyzeProbe };
+window.__shotTimer = { get state() { return T.state; }, get run() { return T.run; }, simulateShot, startRun, stopRun, get settings() { return settings; }, get history() { return hist; }, ShotDetector, analyzeProbe, audio };
 </script>
 </body>
 </html>
