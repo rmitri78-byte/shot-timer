@@ -98,7 +98,9 @@ If shots are missed: lower the threshold. If it counts things that aren't shots
   **Settings → Beep check** plays the beep and tells you how loud it is versus
   your threshold, the measured delay, and when the mic goes quiet — i.e. the
   earliest shot that can be timed. Calibration never plays the beep.
-- A shot heard *before* the beep ends the run as a **false start**.
+- Nothing heard before the beep counts (charging the blaster, motor spin-up,
+  bumps). If you want match-style strictness, Settings → **Flag false starts**
+  makes a shot before the beep end the run as a false start instead.
 - Speaker output latency and mic input latency **add up** inside every measured
   time (the beep leaves the speaker late, and the shot reaches the detector
   late). **Beep check** measures exactly that round trip and the app subtracts
@@ -132,8 +134,8 @@ exactly as with real shots.
 
 ## Drill settings worth knowing
 
-- **Get-ready time**: a fixed pause before the random delay; sounds during it
-  are ignored rather than counted as false starts.
+- **Get-ready time**: with false starts on, a fixed pause before the random
+  delay during which sounds are ignored.
 - **Auto-repeat**: starts the next string by itself N seconds after one ends, so
   you can run 20 reps without touching the device (Esc / Stop cancels).
 - **Minimum split**: ~80 ms for semi-auto, ~50 ms for a burst.

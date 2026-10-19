@@ -150,7 +150,8 @@
         <option value="5">5</option><option value="6">6</option><option value="8">8</option><option value="10">10</option>
         <option value="0">Until stop</option>
       </select></div>
-    <div class="row"><label for="s-leadIn">Get-ready time (s)<small>Fixed pause before the random delay. Sounds during it are ignored, not false starts.</small></label><input id="s-leadIn" data-key="leadIn" type="number" min="0" max="10" step="0.5"></div>
+    <div class="row"><label for="s-falseStart">Flag false starts<small>Off: anything heard before the beep is ignored. On: a shot before the beep ends the run as a false start.</small></label><input id="s-falseStart" data-key="falseStart" type="checkbox"></div>
+    <div class="row"><label for="s-leadIn">Get-ready time (s)<small>Fixed pause before the random delay. Only matters with false starts on: sounds during it are ignored.</small></label><input id="s-leadIn" data-key="leadIn" type="number" min="0" max="10" step="0.5"></div>
     <div class="row"><label for="s-delayMin">Random delay, min (s)</label><input id="s-delayMin" data-key="delayMin" type="number" min="0.2" max="20" step="0.5"></div>
     <div class="row"><label for="s-delayMax">Random delay, max (s)</label><input id="s-delayMax" data-key="delayMax" type="number" min="0.2" max="30" step="0.5"></div>
     <div class="row"><label for="s-par">Par time (s)<small>0 = off. Second beep at par; later shots show red.</small></label><input id="s-par" data-key="par" type="number" min="0" max="60" step="0.1"></div>
@@ -204,6 +205,7 @@
 /* ---------------- settings & storage ---------------- */
 const DEFAULTS = {
   shotCount: 1, leadIn: 2, delayMin: 1, delayMax: 4, par: 0, autoStop: 8,
+  falseStart: false,                 // off: anything heard before the beep is ignored; on: it ends the run as a false start
   thrDb: -20, minSplit: 80, offsetMs: 0,
   beepFreq: 2000, beepDur: 100, beepVol: 90, beepWave: 'square', flash: true, // short beep: shots can't be timed while it plays
   decimals: 2, repeat: 0,
@@ -525,8 +527,10 @@ function onOnset({ t, peak, env }) {
   if (T.state === 'calibrating') { calib.onsets.push({ peak, env }); render(); return; }
   if (T.state !== 'standby' && T.state !== 'live') return;
   const run = T.run;
-  if (t < run.tArmed) return;                   // still getting ready
-  if (t < run.tBeep) { falseStart(t); return; }
+  if (t < run.tBeep) {                          // before the beep: nothing counts unless false-start flagging is on
+    if (settings.falseStart && t >= run.tArmed) falseStart(t);
+    return;
+  }
   run.shots.push({ t: t - run.tBeep - run.latency + settings.offsetMs / 1000, peak });
   if (T.state === 'standby') T.state = 'live'; // the onset beat our own "go live" timer; the time is still right
   if (run.shotCount > 0 && run.shots.length >= run.shotCount) finishRun('count');
@@ -725,8 +729,8 @@ function render() {
     setStatus('Beep check', 'Listening to the beep…');
     el.big.textContent = '…';
   } else if (st === 'standby') {
-    if (audio.now() < run.tArmed) setStatus('Get ready' + dry, `Arming in ${settings.leadIn} s`);
-    else setStatus('Stand by' + dry, 'Wait for the beep');
+    if (settings.falseStart && audio.now() < run.tArmed) setStatus('Get ready' + dry, `Arming in ${settings.leadIn} s`);
+    else setStatus('Stand by' + dry, settings.falseStart ? 'Wait for the beep — a shot before it is a false start' : 'Wait for the beep — nothing counts before it');
     el.big.textContent = '—';
   } else if (st === 'live') {
     setStatus('Live' + dry, run.shots.length ? `${run.shots.length} shot${run.shots.length === 1 ? '' : 's'} · 1st ${fmt(run.shots[0].t)}` : `Listening (shots timed from ${Math.round(run.floor * 1000)} ms)`);
